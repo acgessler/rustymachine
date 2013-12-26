@@ -55,6 +55,7 @@ impl ClassLoader {
 		}
 	}
 
+
 	// ----------------------------------------------
 	// Loads a class given its fully qualified class name.
 	//
@@ -77,8 +78,11 @@ impl ClassLoader {
 					File::open(&PosixPath::new(p)).read_to_end()
 				}) {
 					Err(e) => continue,
-					Ok(bytes) => return self.add_from_classfile_bytes(bytes)
-						.unwrap() 
+					Ok(bytes) => {
+						debug!("found .class file");
+						return self.add_from_classfile_bytes(bytes)
+							.unwrap() 
+					}
 				};
 			}
 			return Err(~"failed to locate class file for " + cname);
@@ -100,18 +104,27 @@ impl ClassLoader {
 				let mut reader = BufReader::new(bytes);
 				
 				let magic = reader.read_be_u32() as uint;
-				let major = reader.read_be_u16() as uint;
+				if magic != 0xCAFEBABE {
+					return Err(~"magic word not found");
+				}
+
 				let minor = reader.read_be_u16() as uint;
+				let major = reader.read_be_u16() as uint;
+
+				// TODO: check whether we support this format
+				debug!("class file version {}.{}", major, minor);
+
 				let cpool_count = reader.read_be_u16() as uint;
 				if cpool_count == 0 {
 					return Err(~"invalid constant pool size");
 				}
 
+				debug!("{} constant pool entries", cpool_count - 1);
 				let mut constants : ~[def::Constant] = ~[];
 
 				// read constant pool
-				let mut i = cpool_count - 1 as uint;
-				while i > 0 {
+				let mut i = 1;
+				while i < cpool_count {
 					let tag = reader.read_u8();
 					let parsed_tag : Option<def::ConstantPoolTags> = 
 						FromPrimitive::from_u8(tag);
@@ -131,13 +144,13 @@ impl ClassLoader {
 					// if that was ok, add it to the list and advance
 					match maybe_centry {
 						Err(e) => return Err(e),
-						Ok(centry) => constants.push(centry)
+						Ok(centry) => {
+							debug!("adding constant pool entry: {}", parsed_tag.to_str());
+							constants.push(centry)
+						}
 					}
 
-					assert!(i > skip);
-					i -= skip;
-
-					--i;
+					i += skip + 1;
 				}
 
 				let access = reader.read_be_u16() as uint;

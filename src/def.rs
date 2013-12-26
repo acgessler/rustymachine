@@ -23,6 +23,7 @@ static ACC_ENUM : uint = 0x4000;
 
 
 #[deriving(FromPrimitive)]
+#[deriving(ToStr)]
 pub enum ConstantPoolTags {
 	CONSTANT_class = 7,
 	CONSTANT_fieldref = 9,
@@ -39,7 +40,6 @@ pub enum ConstantPoolTags {
 	CONSTANT_methodtype = 16,
 	CONSTANT_invokedynamic = 18
 }
-
 
 
 pub enum Constant {
