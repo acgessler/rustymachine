@@ -15,6 +15,7 @@ use extra::future::Future;
 use extra::arc::Arc;
 
 
+mod util;
 mod class;
 mod def;
 
@@ -253,17 +254,11 @@ fn test_class_loader_fail() {
 	assert!(cl.add_from_classfile("FooClassDoesNotExist").unwrap().is_err());
 }
 
-fn assert_no_err<T> (given : Result<T, ~str>) {
-	match given {
-		Err(s) => fail!("expected no error, error is: {}", s),
-		_ => ()
-	}
-}
 
 #[test]
 fn test_class_loader_good() {
 	let cl = ClassLoader::new("../test/java");
 	let v = cl.add_from_classfile("EmptyClass").unwrap();
-	assert_no_err(v);
+	util::assert_no_err(v);
 }
 
