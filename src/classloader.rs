@@ -230,7 +230,10 @@ impl ClassLoader {
 						err = Some(~"constant pool entry is not  valid UTF8 string");
 						def::CONSTANT_utf8_info(~"")
 					},
-					Some(s) => def::CONSTANT_utf8_info(s)
+					Some(s) => {
+						debug!("utf8 string: {}", s);
+						def::CONSTANT_utf8_info(s)
+					}
 				}
 			},
 			def::CONSTANT_methodhandle => 
