@@ -4,55 +4,69 @@ extern mod std;
 use std::hashmap::HashMap;
 use std::path::PosixPath;
 
-use std::io::{File,result, IoError};
 use std::io::mem::BufReader;
+use std::io::{result, IoError};
 
 use std::num::FromPrimitive;
 
 use std::str::from_utf8_owned_opt;
 
 use extra::future::Future;
-use extra::arc::Arc;
+use extra::arc::{Arc, RWArc, MutexArc};
 
 
+use def::{ConstantPoolTags, Constant};
+use class::{JavaClass};
+use classpath::{ClassPath};
+
+mod def;
 mod util;
 mod class;
-mod def;
+mod classpath;
 
 
-fn build_classpath(invar : &str) -> ~[~str] {
-	// current folder is always included
-	let mut v = ~[~"."];
+// shared ref to a java class def
+type JavaClassRef = Arc<JavaClass>;
 
-	// TODO: how to construct a vector directly from an iter?
-	for s in invar.split_str(";")
-		.map(|s : &str| { s.trim().to_owned() }) 
-		.filter(|s : &~str| {s.len() > 0}){
+// future ref to a java class
+type JavaClassFutureRef = Future<Result<JavaClassRef,~str>>;
 
-		v.push(s);
-	}
-	return v;
-}
+// table of java classes indexed by fully qualified name
+type ClassTable = HashMap<~str, JavaClassRef>;
+type ClassTableRef = MutexArc<ClassTable>;
 
-
-pub struct ClassLoader {
-	priv classpath : ~[~str],
-	priv classes : HashMap<~str, ~class::JavaClass>
-}
 
 
 static INITIAL_CLASSLOADER_CAPACITY : uint = 1024;
+
+
+
+pub struct ClassLoader {
+	priv inner : ClonableClassLoader
+}
+
 
 impl ClassLoader {
 
 	// ----------------------------------------------
 	// Constructs a ClassLoader given a CLASSPATH that consists of one or 
 	// more .class search paths separated by semicolons.
-	pub fn new(classpath : &str) -> ~ClassLoader {
-		~ClassLoader {
-			classpath : build_classpath(classpath),
-			classes : HashMap::with_capacity(INITIAL_CLASSLOADER_CAPACITY),
+	pub fn new(classpath : &str) -> ClassLoader {
+		ClassLoader {
+			inner: ClonableClassLoader::new(
+				ClassPath::new_from_string(classpath),
+				MutexArc::new(HashMap::with_capacity(INITIAL_CLASSLOADER_CAPACITY))
+			),
 		}
+	}
+
+
+	// ----------------------------------------------
+	// Checks if a class with a given name is currently loaded. Note that
+	// class loading is inherently asynchronous.
+	pub fn get_class(&self, name : &str) -> Option<JavaClassRef>
+	{
+		return self.inner.get_class(name);
 	}
 
 
@@ -62,30 +76,85 @@ impl ClassLoader {
 	// This triggers recursive loading of dependent classes.
 	// 
 	// add_from_classfile("de.fruits.Apple") loads <class-path>/de/fruits/Apple.class
-	pub fn add_from_classfile(self, name : &str) -> 
-		Future<
-			Result<Arc<class::JavaClass>,~str>
-		>
+	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef
 	{
-		let cname = name.to_owned();
-		let pname = cname.replace(&".", "/") + ".class";
+		return self.inner.clone().add_from_classfile(name);
+	}
+
+
+	// ----------------------------------------------
+	pub fn get_classpath(&self) -> ClassPath
+	{
+		return self.inner.classpath.clone();
+	}
+
+
+	// internal
+
+
+	// ----------------------------------------------
+	fn get_class_table(&self) -> ClassTableRef
+	{
+		return self.inner.ClassTableRef.clone();
+	}
+
+}
+
+
+
+struct ClonableClassLoader {
+	priv classpath : ClassPath,
+	priv ClassTableRef : ClassTableRef
+}
+
+
+impl ClonableClassLoader {
+
+	// ----------------------------------------------
+	pub fn new(classpath : ClassPath, ClassTableRef : ClassTableRef) -> ClonableClassLoader {
+		ClonableClassLoader {
+			classpath : classpath,
+			ClassTableRef : ClassTableRef,
+		}
+	}
+
+
+	// ----------------------------------------------
+	pub fn get_class(&self, name : &str) -> Option<JavaClassRef>
+	{
+		let cname = name.into_owned();
+		unsafe { 
+			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| {
+				match table.find(&cname) {
+					Some(ref elem) => Some((*elem).clone()),
+					None => None
+				}
+			})
+		}
+	}
+
+	
+	// ----------------------------------------------
+	pub fn add_from_classfile(self, name : &str) -> JavaClassFutureRef
+	{
+		// do nothing if the class is already loaded
+		match self.get_class(name) {
+			Some(class) => {
+				return Future::from_value(Ok(class));
+			},
+			None => ()
+		}
+
+		let cname = name.into_owned();
+
 		do Future::spawn {
-			for path in self.classpath.iter() {
-				
-				match result(|| { 
-					let p = *path + "/" + pname;
-					debug!("load class {}, trying path {}", cname, p);
-					File::open(&PosixPath::new(p)).read_to_end()
-				}) {
-					Err(e) => continue,
-					Ok(bytes) => {
-						debug!("found .class file");
-						return self.add_from_classfile_bytes(bytes)
+			match self.classpath.locate_and_read(cname) {
+				None => Err(~"failed to locate class file for " + cname),
+				Some(bytes) => {
+					self.add_from_classfile_bytes(cname, bytes)
 							.unwrap() 
-					}
-				};
+				}
 			}
-			return Err(~"failed to locate class file for " + cname);
 		}
 	}
 
@@ -94,14 +163,11 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
-	fn add_from_classfile_bytes(self, bytes : ~[u8]) -> 
-		Future<
-			Result<Arc<class::JavaClass>,~str>
-		> 
+	fn add_from_classfile_bytes(mut self, name : ~str, bytes : ~[u8]) -> JavaClassFutureRef
 	{
 		do Future::spawn {
 			match result(|| { 
-				let mut reader = BufReader::new(bytes);
+				let reader = &mut BufReader::new(bytes) as &mut Reader;
 				
 				let magic = reader.read_be_u32() as uint;
 				if magic != 0xCAFEBABE {
@@ -114,61 +180,44 @@ impl ClassLoader {
 				// TODO: check whether we support this format
 				debug!("class file version {}.{}", major, minor);
 
-				let cpool_count = reader.read_be_u16() as uint;
-				if cpool_count == 0 {
-					return Err(~"invalid constant pool size");
-				}
-
-				debug!("{} constant pool entries", cpool_count - 1);
-				let mut constants : ~[def::Constant] = ~[];
-
-				// read constant pool
-				let mut i = 1;
-				while i < cpool_count {
-					let tag = reader.read_u8();
-					let parsed_tag : Option<def::ConstantPoolTags> = 
-						FromPrimitive::from_u8(tag);
-
-					let mut skip = 0;
-					let maybe_centry = match parsed_tag {
-						None => Err(format!("constant pool tag not recognized: {}", tag)),
-						Some(c) => {
-							ClassLoader::read_cpool_entry_body(c, 
-								&mut reader as &mut Reader, 
-								cpool_count as uint, 
-								&mut skip
-							)
+				// constant pool
+				match ClonableClassLoader::load_constant_pool(reader) {
+					Err(s) => return Err(s),
+					Ok(constants) => {
+						let access = reader.read_be_u16() as uint;
+				
+						// our own name - only used for verification
+						match ClonableClassLoader::resolve_class_cpool_entry(
+							constants, reader.read_be_u16() as uint
+						) {
+							Err(s) => return Err(s),
+							Ok(name) => {
+								debug!("class name embedded in .class file is {}", name);
+							}
 						}
-					};
+						
+						// super class name and implemented interfaces - must be loaded
+						match self.load_class_parents(
+							constants, reader
+						) {
+							Err(s) => return Err(s),
+							Ok(future_parents) => {
+								// TODO:
+								let fields_count = reader.read_be_u16() as uint;
+								let methods_count = reader.read_be_u16() as uint;
 
-					// if that was ok, add it to the list and advance
-					match maybe_centry {
-						Err(e) => return Err(e),
-						Ok(centry) => {
-							debug!("adding constant pool entry: {}", parsed_tag.to_str());
-							constants.push(centry)
+								// read methods
+
+								let attrs_count = reader.read_be_u16() as uint;
+
+								return Ok(self.register_class(name, Arc::new(JavaClass::new(
+									constants,
+									future_parents
+								))))
+							}
 						}
 					}
-
-					i += skip + 1;
 				}
-
-				let access = reader.read_be_u16() as uint;
-				let this_class = reader.read_be_u16() as uint;
-				let super_class = reader.read_be_u16() as uint;
-				let ifaces_count = reader.read_be_u16() as uint;
-
-				// read interfaces
-
-				let fields_count = reader.read_be_u16() as uint;
-				let methods_count = reader.read_be_u16() as uint;
-
-				// read methods
-
-				let attrs_count = reader.read_be_u16() as uint;
-
-				// read attributes
-				return Ok(Arc::new(class::JavaClass::new()))
 			}) {
 				Err(e) => Err(~"classloader: unexpected end-of-file or read error"),
 				Ok(T) => T
@@ -178,9 +227,140 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
-	fn read_cpool_entry_body(tag : def::ConstantPoolTags, reader : &mut Reader, count : uint, 
+	// Adds a class instance to the table of loaded classes 
+	// and thereby marks it officially as loaded.
+	fn register_class(&self, name : &str, class : JavaClassRef) -> JavaClassRef
+	{
+		let cname = name.into_owned();
+
+
+		let res = unsafe { 
+			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| {
+				(*table.find_or_insert(cname.clone(), class.clone())).clone()
+			}) 
+		};
+
+		debug!("loaded class {}", name);
+		assert!(self.get_class(name).is_some());
+
+		return res;
+	}
+
+
+	// ----------------------------------------------
+	// Load the portion of the .class file header that containts 
+	// the constant value pool (cpool) and parse all entries
+	// into proper structures.
+	fn load_constant_pool(reader: &mut Reader) ->  Result<~[Constant], ~str>
+	{
+		let cpool_count = reader.read_be_u16() as uint;
+		if cpool_count == 0 {
+			return Err(~"invalid constant pool size");
+		}
+
+		debug!("{} constant pool entries", cpool_count - 1);
+		let mut constants : ~[Constant] = ~[];
+
+		// read constant pool
+		let mut i = 1;
+		while i < cpool_count {
+			let tag = reader.read_u8();
+			let parsed_tag : Option<ConstantPoolTags> = 
+				FromPrimitive::from_u8(tag);
+
+			let mut skip = 0;
+			let maybe_centry = match parsed_tag {
+				None => Err(format!("constant pool tag not recognized: {}", tag)),
+				Some(c) => {
+					ClonableClassLoader::read_cpool_entry_body(c, 
+						reader, 
+						cpool_count as uint, 
+						&mut skip
+					)
+				}
+			};
+
+			// if that was ok, add it to the list and advance
+			match maybe_centry {
+				Err(e) => return Err(e),
+				Ok(centry) => {
+					debug!("adding constant pool entry: {}", parsed_tag.to_str());
+					constants.push(centry)
+				}
+			}
+
+			i += skip + 1;
+		}
+		return Ok(constants);
+	}
+
+
+	// ----------------------------------------------
+	// Load the portion of a .class file header that lists the class'
+	// super class as well as all implemented interfaces, loads all
+	// of them and returns a list of future classes.
+	fn load_class_parents(&self, constants : &[Constant], reader: &mut Reader)  
+		-> Result<~[ JavaClassRef ], ~str>
+	{
+		match ClonableClassLoader::resolve_class_cpool_entry(
+			constants, reader.read_be_u16() as uint
+		) {
+			Err(s) => Err(s),
+			Ok(super_class_name) => {
+
+				let mut future_parents : ~[ JavaClassRef ] = ~[];
+				match self.clone().add_from_classfile(super_class_name).unwrap() {
+					Err(s) => return Err("failure loading parent class: " + s),
+					Ok(cl) => future_parents.push(cl),
+				}
+				
+				let ifaces_count = reader.read_be_u16() as uint;
+				let mut i = 0;
+				while i < ifaces_count {
+					match ClonableClassLoader::resolve_class_cpool_entry(
+						constants, reader.read_be_u16() as uint
+					) {
+						Err(s) => return Err(s),
+						Ok(iface_name) => {
+							match self.clone().add_from_classfile(iface_name).unwrap() {
+								Err(s) => return Err("failure loading interface: " + s),
+								Ok(cl) => future_parents.push(cl),
+							}
+						}
+					}
+					i += 1;
+				}
+				return Ok(future_parents);
+			}
+		}
+	}
+
+
+	// ----------------------------------------------
+	// Given a parsed constant pool, locate a class entry in it and
+	// resolve the UTF8 name of the class.
+	fn resolve_class_cpool_entry(constants : &[Constant], oneb_index : uint) ->
+		Result<~str,~str>
+	{
+		assert!(oneb_index != 0 && oneb_index <= constants.len());
+
+		match constants[oneb_index - 1] {
+			def::CONSTANT_class_info(ref utf8_idx) => {
+				assert!(*utf8_idx != 0 && (*utf8_idx as uint) <= constants.len());
+				match constants[*utf8_idx - 1] {
+					def::CONSTANT_utf8_info(ref s) => Ok(s.clone()),
+					_ => Err(~"class name cpool entry is not a CONSTANT_Utf8"),
+				}
+			},
+			_ => Err(~"not a CONSTANT_class entry"),
+		}
+	}
+
+
+	// ----------------------------------------------
+	fn read_cpool_entry_body(tag : ConstantPoolTags, reader : &mut Reader, count : uint, 
 		skip : &mut uint) -> 
-		Result<def::Constant, ~str> 
+		Result<Constant, ~str> 
 	{
 		let mut err : Option<~str> = None;
 		let cindex = || {
@@ -258,22 +438,26 @@ impl ClassLoader {
 	}
 }
 
-#[test]
-fn test_class_path_decomposition() {
-	let cp = build_classpath("~/some/other/bar; /bar/baz;dir ;");
-	assert_eq!(cp,~[~".",~"~/some/other/bar", ~"/bar/baz", ~"dir"]);
+impl Clone for ClonableClassLoader {
+	fn clone(&self) -> ClonableClassLoader {
+		ClonableClassLoader {
+			classpath : self.classpath.clone(),
+			ClassTableRef : self.ClassTableRef.clone(),
+		}
+	}
 }
+
 
 #[test]
 fn test_class_loader_fail() {
-	let cl = ClassLoader::new("");
+	let mut cl = ClassLoader::new("");
 	assert!(cl.add_from_classfile("FooClassDoesNotExist").unwrap().is_err());
 }
 
 
 #[test]
 fn test_class_loader_good() {
-	let cl = ClassLoader::new("../test/java");
+	let mut cl = ClassLoader::new("../test/java");
 	let v = cl.add_from_classfile("EmptyClass").unwrap();
 	util::assert_no_err(v);
 }

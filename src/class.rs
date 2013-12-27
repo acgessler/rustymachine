@@ -1,21 +1,44 @@
 use std::hashmap::HashMap;
+
+use extra::future::Future;
+use extra::arc::Arc;
+
+use def::Constant;
+
 mod method;
+
+
+type JavaClassRef = Arc<JavaClass>;
 
 
 pub struct JavaClass {
 	priv name : ~str,
 	priv attrs : uint,
-	priv methods : HashMap<~str, ~method::JavaMethod>,
+	priv constants : ~[Constant],
+	priv parents : ~[ JavaClassRef ],
+	priv methods : ~HashMap<~str, ~method::JavaMethod>,
 }
 
 
 impl JavaClass {
 
-	pub fn new() -> JavaClass {
+	// ----------------------------------------------
+	pub fn new(constants : ~[Constant], parents : ~[ JavaClassRef ] ) 
+	-> JavaClass 
+	{
 		JavaClass { 
 			name: ~"", 
 			attrs: 0, 
-			methods : HashMap::with_capacity(16)
+			methods : ~HashMap::with_capacity(16),
+			constants : constants,
+			parents : parents
 		}
 	}
+
+
+	// ----------------------------------------------
+	/* pub fn get_name<'a>(&'a self) -> &'a str {
+		&'a self.name
+	} */
 }
+
