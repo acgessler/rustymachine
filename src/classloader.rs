@@ -152,7 +152,6 @@ impl ClonableClassLoader {
 				None => Err(~"failed to locate class file for " + cname),
 				Some(bytes) => {
 					self.add_from_classfile_bytes(cname, bytes)
-							.unwrap() 
 				}
 			}
 		}
@@ -163,65 +162,71 @@ impl ClonableClassLoader {
 
 
 	// ----------------------------------------------
-	fn add_from_classfile_bytes(mut self, name : ~str, bytes : ~[u8]) -> JavaClassFutureRef
+	fn add_from_classfile_bytes(mut self, name : ~str, bytes : ~[u8]) -> 
+		Result<JavaClassRef, ~str>
 	{
-		do Future::spawn {
-			match result(|| { 
-				let reader = &mut BufReader::new(bytes) as &mut Reader;
-				
-				let magic = reader.read_be_u32() as uint;
-				if magic != 0xCAFEBABE {
-					return Err(~"magic word not found");
-				}
+		match result(|| { 
+			let reader = &mut BufReader::new(bytes) as &mut Reader;
+			
+			let magic = reader.read_be_u32() as uint;
+			if magic != 0xCAFEBABE {
+				return Err(~"magic word not found");
+			}
 
-				let minor = reader.read_be_u16() as uint;
-				let major = reader.read_be_u16() as uint;
+			let minor = reader.read_be_u16() as uint;
+			let major = reader.read_be_u16() as uint;
 
-				// TODO: check whether we support this format
-				debug!("class file version {}.{}", major, minor);
+			// TODO: check whether we support this format
+			debug!("class file version {}.{}", major, minor);
 
-				// constant pool
-				match ClonableClassLoader::load_constant_pool(reader) {
-					Err(s) => return Err(s),
-					Ok(constants) => {
-						let access = reader.read_be_u16() as uint;
-				
-						// our own name - only used for verification
-						match ClonableClassLoader::resolve_class_cpool_entry(
-							constants, reader.read_be_u16() as uint
-						) {
-							Err(s) => return Err(s),
-							Ok(name) => {
-								debug!("class name embedded in .class file is {}", name);
-							}
+			// constant pool
+			match ClonableClassLoader::load_constant_pool(reader) {
+				Err(s) => return Err(s),
+				Ok(constants) => {
+					let access = reader.read_be_u16() as uint;
+			
+					// our own name - only used for verification
+					match ClonableClassLoader::resolve_class_cpool_entry(
+						constants, reader.read_be_u16() as uint
+					) {
+						Err(s) => return Err(s),
+						Ok(name) => {
+							debug!("class name embedded in .class file is {}", name);
 						}
-						
-						// super class name and implemented interfaces - must be loaded
-						match self.load_class_parents(
-							constants, reader
-						) {
-							Err(s) => return Err(s),
-							Ok(future_parents) => {
-								// TODO:
-								let fields_count = reader.read_be_u16() as uint;
-								let methods_count = reader.read_be_u16() as uint;
+					}
+					
+					// super class name and implemented interfaces - must be loaded
+					match self.load_class_parents(
+						constants, reader
+					) {
+						Err(s) => return Err(s),
+						Ok(future_parents) => {
 
-								// read methods
-
-								let attrs_count = reader.read_be_u16() as uint;
-
-								return Ok(self.register_class(name, Arc::new(JavaClass::new(
-									constants,
-									future_parents
-								))))
+							if future_parents.len() == 0 {
+								if name != ~"java.lang.Object" && (access & def::ACC_INTERFACE) == 0 {
+									return Err(~"Only interfaces and java.lang.Object can go without super class");
+								}
 							}
+
+							// TODO:
+							let fields_count = reader.read_be_u16() as uint;
+							let methods_count = reader.read_be_u16() as uint;
+
+							// read methods
+
+							let attrs_count = reader.read_be_u16() as uint;
+
+							return Ok(self.register_class(name, Arc::new(JavaClass::new(
+								constants,
+								future_parents
+							))))
 						}
 					}
 				}
-			}) {
-				Err(e) => Err(~"classloader: unexpected end-of-file or read error"),
-				Ok(T) => T
 			}
+		}) {
+			Err(e) => Err(~"classloader: unexpected end-of-file or read error"),
+			Ok(T) => T
 		}
 	}
 
@@ -302,37 +307,42 @@ impl ClonableClassLoader {
 	fn load_class_parents(&self, constants : &[Constant], reader: &mut Reader)  
 		-> Result<~[ JavaClassRef ], ~str>
 	{
-		match ClonableClassLoader::resolve_class_cpool_entry(
-			constants, reader.read_be_u16() as uint
-		) {
-			Err(s) => Err(s),
-			Ok(super_class_name) => {
+		let mut future_parents : ~[ JavaClassRef ] = ~[];
 
-				let mut future_parents : ~[ JavaClassRef ] = ~[];
-				match self.clone().add_from_classfile(super_class_name).unwrap() {
-					Err(s) => return Err("failure loading parent class: " + s),
-					Ok(cl) => future_parents.push(cl),
-				}
-				
-				let ifaces_count = reader.read_be_u16() as uint;
-				let mut i = 0;
-				while i < ifaces_count {
-					match ClonableClassLoader::resolve_class_cpool_entry(
-						constants, reader.read_be_u16() as uint
-					) {
-						Err(s) => return Err(s),
-						Ok(iface_name) => {
-							match self.clone().add_from_classfile(iface_name).unwrap() {
-								Err(s) => return Err("failure loading interface: " + s),
-								Ok(cl) => future_parents.push(cl),
-							}
-						}
+		let parent_index = reader.read_be_u16() as uint;
+
+		// parent_index is 0 for interfaces, and for java.lang.Object
+		if parent_index != 0 {
+			match ClonableClassLoader::resolve_class_cpool_entry(
+				constants, parent_index
+			) {
+				Err(s) => return Err(s),
+				Ok(super_class_name) => {
+					match self.clone().add_from_classfile(super_class_name).unwrap() {
+						Err(s) => return Err("failure loading parent class: " + s),
+						Ok(cl) => future_parents.push(cl),
 					}
-					i += 1;
 				}
-				return Ok(future_parents);
 			}
 		}
+				
+		let ifaces_count = reader.read_be_u16() as uint;
+		let mut i = 0;
+		while i < ifaces_count {
+			match ClonableClassLoader::resolve_class_cpool_entry(
+				constants, reader.read_be_u16() as uint
+			) {
+				Err(s) => return Err(s),
+				Ok(iface_name) => {
+					match self.clone().add_from_classfile(iface_name).unwrap() {
+						Err(s) => return Err("failure loading interface: " + s),
+						Ok(cl) => future_parents.push(cl),
+					}
+				}
+			}
+			i += 1;
+		}
+		return Ok(future_parents);
 	}
 
 
@@ -348,7 +358,7 @@ impl ClonableClassLoader {
 			def::CONSTANT_class_info(ref utf8_idx) => {
 				assert!(*utf8_idx != 0 && (*utf8_idx as uint) <= constants.len());
 				match constants[*utf8_idx - 1] {
-					def::CONSTANT_utf8_info(ref s) => Ok(s.clone()),
+					def::CONSTANT_utf8_info(ref s) => Ok(s.clone().replace("/",".")),
 					_ => Err(~"class name cpool entry is not a CONSTANT_Utf8"),
 				}
 			},
@@ -457,7 +467,7 @@ fn test_class_loader_fail() {
 
 #[test]
 fn test_class_loader_good() {
-	let mut cl = ClassLoader::new("../test/java");
+	let mut cl = ClassLoader::new("../test/java;../rt");
 	let v = cl.add_from_classfile("EmptyClass").unwrap();
 	util::assert_no_err(v);
 }

@@ -6,20 +6,21 @@ extern mod std;
 use std::num::FromPrimitive;
 use std::io::Reader;
 
-static ACC_PUBLIC : uint = 0x1;
-static ACC_PRIVATE : uint = 0x2;
-static ACC_PROTECTED : uint = 0x4;
-static ACC_STATIC : uint = 0x8;
-static ACC_FINAL : uint = 0x10;
-static ACC_SYNCHRONIZED : uint = 0x20;
-static ACC_VOLATILE : uint = 0x40;
-static ACC_TRANSIENT: uint = 0x80;
-static ACC_NATIVE : uint = 0x100;
-static ACC_ABSTRACT : uint = 0x400;
-static ACC_STRICTFP : uint = 0x800;
-static ACC_SYNTHETIC : uint = 0x1000;
-static ACC_ANNOTATION : uint = 0x2000;
-static ACC_ENUM : uint = 0x4000;
+pub static ACC_PUBLIC : uint = 0x1;
+pub static ACC_PRIVATE : uint = 0x2;
+pub static ACC_PROTECTED : uint = 0x4;
+pub static ACC_STATIC : uint = 0x8;
+pub static ACC_FINAL : uint = 0x10;
+pub static ACC_SYNCHRONIZED : uint = 0x20;
+pub static ACC_VOLATILE : uint = 0x40;
+pub static ACC_TRANSIENT: uint = 0x80;
+pub static ACC_NATIVE : uint = 0x100;
+pub static ACC_INTERFACE : uint = 0x200;
+pub static ACC_ABSTRACT : uint = 0x400;
+pub static ACC_STRICTFP : uint = 0x800;
+pub static ACC_SYNTHETIC : uint = 0x1000;
+pub static ACC_ANNOTATION : uint = 0x2000;
+pub static ACC_ENUM : uint = 0x4000;
 
 
 #[deriving(FromPrimitive)]
