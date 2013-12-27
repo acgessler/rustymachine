@@ -37,8 +37,8 @@ impl JavaClass {
 
 
 	// ----------------------------------------------
-	/* pub fn get_name<'a>(&'a self) -> &'a str {
-		&'a self.name
-	} */
+	pub fn get_name<'a>(&'a self) -> &'a ~str {
+		return &self.name
+	} 
 }
 
