@@ -44,7 +44,7 @@ fn main() {
         None => ~""
     };
     
-	let mut classld = classloader::ClassLoader::new(classpath);
+	let mut classld = classloader::ClassLoader::new_from_string(classpath);
     classld.add_from_classfile(*args.last());
 }
 

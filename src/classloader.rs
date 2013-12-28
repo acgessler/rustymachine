@@ -34,18 +34,18 @@ pub type ClassTableRef = MutexArc<ClassTable>;
 
 
 
-static INITIAL_CLASSLOADER_CAPACITY : uint = 1024;
 
 
 
-/** */
+// Abstract trait to describe a class loader's basic behaviour
 pub trait AbstractClassLoader {
 	fn load(&mut self, name : &str) -> JavaClassFutureRef;
 }
 
 
 
-// Mock class loader
+// Mock class loader that refuses to load any classes and instead just
+// returns the "DUMMY" error string.
 pub struct DummyClassLoader;
 impl AbstractClassLoader for DummyClassLoader {
 	fn load(&mut self, name : &str) -> JavaClassFutureRef
@@ -56,10 +56,14 @@ impl AbstractClassLoader for DummyClassLoader {
 
 
 
-// Real, user-facing class loader that maintains global state
+// ClassLoader is clonable as to enable every task to have a copy of it.
+// However, all ClassLoader's derived from the same original loader share
+// their internal state through a concurrent hash map.
 pub struct ClassLoader {
-	priv inner : ClonableClassLoader
+	priv classpath : ClassPath,
+	priv ClassTableRef : ClassTableRef
 }
+
 
 impl AbstractClassLoader for ClassLoader {
 	fn load(&mut self, name : &str) -> JavaClassFutureRef
@@ -69,89 +73,32 @@ impl AbstractClassLoader for ClassLoader {
 }
 
 
+static INITIAL_CLASSLOADER_CAPACITY : uint = 1024;
+
 impl ClassLoader {
 
 	// ----------------------------------------------
-	// Constructs a ClassLoader given a CLASSPATH that consists of one or 
-	// more .class search paths separated by semicolons.
-	pub fn new(classpath : &str) -> ClassLoader {
-		ClassLoader {
-			inner: ClonableClassLoader::new(
+	pub fn new_from_string(classpath : &str) -> ClassLoader {
+		ClassLoader::new(
 				ClassPath::new_from_string(classpath),
 				MutexArc::new(HashMap::with_capacity(INITIAL_CLASSLOADER_CAPACITY))
-			),
+		)
+	}
+
+
+	// ----------------------------------------------
+	pub fn new(classpath : ClassPath, ClassTableRef : ClassTableRef) -> ClassLoader {
+		ClassLoader {
+			classpath : classpath,
+			ClassTableRef : ClassTableRef,
 		}
-	}
-
-
-	// ----------------------------------------------
-	// Checks if a class with a given name is currently loaded. Note that
-	// class loading is inherently asynchronous.
-	pub fn get_class(&self, name : &str) -> Option<JavaClassRef>
-	{
-		return self.inner.get_class(name);
-	}
-
-
-	// ----------------------------------------------
-	// Loads a class given its fully qualified class name.
-	//
-	// This triggers recursive loading of dependent classes.
-	// 
-	// add_from_classfile("de.fruits.Apple") loads <class-path>/de/fruits/Apple.class
-	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef
-	{
-		return self.inner.clone().add_from_classfile(name);
 	}
 
 
 	// ----------------------------------------------
 	pub fn get_classpath(&self) -> ClassPath
 	{
-		return self.inner.classpath.clone();
-	}
-
-
-	// internal
-	// ----------------------------------------------
-	fn get_class_table(&self) -> ClassTableRef
-	{
-		return self.inner.ClassTableRef.clone();
-	}
-
-}
-
-
-
-// The difference between ClassLoader and ClonableClassLoader is that the latter
-// is clonable and only holds Arcs to (mutable) shared state. During class loading,
-// instances of ClonableClassLoader are copied and send to futures that do the
-// actual loading.
-//
-// ClassLoader is the API that is visible to the user as it may encompass further 
-// utilities or members, and does not bear the ambiguity of being copyable.
-struct ClonableClassLoader {
-	priv classpath : ClassPath,
-	priv ClassTableRef : ClassTableRef
-}
-
-
-impl AbstractClassLoader for ClonableClassLoader {
-	fn load(&mut self, name : &str) -> JavaClassFutureRef
-	{
-		return self.clone().add_from_classfile(name);
-	}
-}
-
-
-impl ClonableClassLoader {
-
-	// ----------------------------------------------
-	pub fn new(classpath : ClassPath, ClassTableRef : ClassTableRef) -> ClonableClassLoader {
-		ClonableClassLoader {
-			classpath : classpath,
-			ClassTableRef : ClassTableRef,
-		}
+		return self.classpath.clone();
 	}
 
 
@@ -171,7 +118,7 @@ impl ClonableClassLoader {
 
 	
 	// ----------------------------------------------
-	pub fn add_from_classfile(self, name : &str) -> JavaClassFutureRef
+	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef
 	{
 		// do nothing if the class is already loaded
 		match self.get_class(name) {
@@ -182,12 +129,16 @@ impl ClonableClassLoader {
 		}
 
 		let cname = name.into_owned();
+		let self_clone_outer = self.clone();
 
 		do Future::spawn {
-			match self.classpath.locate_and_read(cname) {
+			// TODO: if we don't clone() twice, borrowch complains.
+			// May be resolved through https://github.com/mozilla/rust/issues/10617
+			let mut self_clone = self_clone_outer.clone();
+			match self_clone.classpath.locate_and_read(cname) {
 				None => Err(~"failed to locate class file for " + cname),
 				Some(bytes) => {
-					self.add_from_classfile_bytes(cname, bytes)
+					self_clone.add_from_classfile_bytes(cname, bytes)
 				}
 			}
 		}
@@ -198,7 +149,7 @@ impl ClonableClassLoader {
 
 
 	// ----------------------------------------------
-	fn add_from_classfile_bytes(mut self, name : ~str, bytes : ~[u8]) -> 
+	fn add_from_classfile_bytes(&mut self, name : ~str, bytes : ~[u8]) -> 
 		Result<JavaClassRef, ~str>
 	{
 		match result(|| { 
@@ -217,7 +168,7 @@ impl ClonableClassLoader {
 
 			// 1.
 			// constant pool
-			let maybe_cpool = ClonableClassLoader::load_constant_pool(reader);
+			let maybe_cpool = ClassLoader::load_constant_pool(reader);
 			match maybe_cpool {
 				Err(s) => return Err(s), _ => ()
 			}
@@ -227,7 +178,7 @@ impl ClonableClassLoader {
 	
 			// 2.
 			// our own name - only used for verification
-			let maybe_name = ClonableClassLoader::resolve_class_cpool_entry(
+			let maybe_name = ClassLoader::resolve_class_cpool_entry(
 				constants, reader.read_be_u16() as uint);
 			match maybe_name {
 				Err(s) => return Err(s), _ => ()
@@ -269,7 +220,7 @@ impl ClonableClassLoader {
 				future_parents
 			))))
 		}) {
-			Err(e) => Err(~"classloader: unexpected end-of-file or read error"),
+			Err(e) => Err(~"ClassLoader: unexpected end-of-file or read error"),
 			Ok(T) => T
 		}
 	}
@@ -278,7 +229,7 @@ impl ClonableClassLoader {
 	// ----------------------------------------------
 	// Adds a class instance to the table of loaded classes 
 	// and thereby marks it officially as loaded.
-	fn register_class(&self, name : &str, class : JavaClassRef) -> JavaClassRef
+	fn register_class(&mut self, name : &str, class : JavaClassRef) -> JavaClassRef
 	{
 		let cname = name.into_owned();
 
@@ -321,7 +272,7 @@ impl ClonableClassLoader {
 			let maybe_centry = match parsed_tag {
 				None => Err(format!("constant pool tag not recognized: {}", tag)),
 				Some(c) => {
-					ClonableClassLoader::read_cpool_entry_body(c, 
+					ClassLoader::read_cpool_entry_body(c, 
 						reader, 
 						cpool_count as uint, 
 						&mut skip
@@ -348,7 +299,7 @@ impl ClonableClassLoader {
 	// Load the portion of a .class file header that lists the class'
 	// super class as well as all implemented interfaces, loads all
 	// of them and returns a list of future classes.
-	fn load_class_parents(&self, constants : &[Constant], reader: &mut Reader)  
+	fn load_class_parents(&mut self, constants : &[Constant], reader: &mut Reader)  
 		-> Result<~[ JavaClassRef ], ~str>
 	{
 		let mut future_parents : ~[ JavaClassRef ] = ~[];
@@ -357,12 +308,12 @@ impl ClonableClassLoader {
 
 		// parent_index is 0 for interfaces, and for java.lang.Object
 		if parent_index != 0 {
-			match ClonableClassLoader::resolve_class_cpool_entry(
+			match ClassLoader::resolve_class_cpool_entry(
 				constants, parent_index
 			) {
 				Err(s) => return Err(s),
 				Ok(super_class_name) => {
-					match self.clone().add_from_classfile(super_class_name).unwrap() {
+					match self.add_from_classfile(super_class_name).unwrap() {
 						Err(s) => return Err("failure loading parent class: " + s),
 						Ok(cl) => future_parents.push(cl),
 					}
@@ -373,12 +324,12 @@ impl ClonableClassLoader {
 		let ifaces_count = reader.read_be_u16() as uint;
 		let mut i = 0;
 		while i < ifaces_count {
-			match ClonableClassLoader::resolve_class_cpool_entry(
+			match ClassLoader::resolve_class_cpool_entry(
 				constants, reader.read_be_u16() as uint
 			) {
 				Err(s) => return Err(s),
 				Ok(iface_name) => {
-					match self.clone().add_from_classfile(iface_name).unwrap() {
+					match self.add_from_classfile(iface_name).unwrap() {
 						Err(s) => return Err("failure loading interface: " + s),
 						Ok(cl) => future_parents.push(cl),
 					}
@@ -492,9 +443,9 @@ impl ClonableClassLoader {
 	}
 }
 
-impl Clone for ClonableClassLoader {
-	fn clone(&self) -> ClonableClassLoader {
-		ClonableClassLoader {
+impl Clone for ClassLoader {
+	fn clone(&self) -> ClassLoader {
+		ClassLoader {
 			classpath : self.classpath.clone(),
 			ClassTableRef : self.ClassTableRef.clone(),
 		}
@@ -511,14 +462,14 @@ pub fn test_get_dummy_classloader() -> DummyClassLoader
 
 pub fn test_get_real_classloader() -> ClassLoader
 {
-	return ClassLoader::new("../test/java;../rt");
+	return ClassLoader::new_from_string("../test/java;../rt");
 }
 
 
 
 #[test]
 fn test_class_loader_fail() {
-	let mut cl = ClassLoader::new("");
+	let mut cl = ClassLoader::new_from_string("");
 	assert!(cl.add_from_classfile("FooClassDoesNotExist").unwrap().is_err());
 }
 
