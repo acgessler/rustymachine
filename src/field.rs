@@ -30,7 +30,7 @@ pub enum BaseType {
 	BT_D_double,   // = 'D',
 	BT_F_float,    // = 'F',
 	BT_I_int,      // = 'I',
-	BT_J_long, 	   // = 'J',
+	BT_J_long,     // = 'J',
 	BT_S_short,    // = 'S',
 	BT_Z_boolean,  // = 'Z'
 }

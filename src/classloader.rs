@@ -215,53 +215,59 @@ impl ClonableClassLoader {
 			// TODO: check whether we support this format
 			debug!("class file version {}.{}", major, minor);
 
+			// 1.
 			// constant pool
-			match ClonableClassLoader::load_constant_pool(reader) {
-				Err(s) => return Err(s),
-				Ok(constants) => {
-					let access = reader.read_be_u16() as uint;
+			let maybe_cpool = ClonableClassLoader::load_constant_pool(reader);
+			match maybe_cpool {
+				Err(s) => return Err(s), _ => ()
+			}
+
+			let constants = maybe_cpool.unwrap();
+			let access = reader.read_be_u16() as uint;
+	
+			// 2.
+			// our own name - only used for verification
+			let maybe_name = ClonableClassLoader::resolve_class_cpool_entry(
+				constants, reader.read_be_u16() as uint);
+			match maybe_name {
+				Err(s) => return Err(s), _ => ()
+			}
+
+			debug!("class name embedded in .class file is {}", maybe_name.unwrap());
 			
-					// our own name - only used for verification
-					match ClonableClassLoader::resolve_class_cpool_entry(
-						constants, reader.read_be_u16() as uint
-					) {
-						Err(s) => return Err(s),
-						Ok(name) => {
-							debug!("class name embedded in .class file is {}", name);
-						}
-					}
-					
-					// super class name and implemented interfaces - must be loaded
-					match self.load_class_parents(
-						constants, reader
-					) {
-						Err(s) => return Err(s),
-						Ok(future_parents) => {
+			// 3.
+			// super class name and implemented interfaces - must be loaded
+			let maybe_parents = self.load_class_parents(
+				constants, reader
+			);
 
-							if future_parents.len() == 0 {
-								if name != ~"java.lang.Object" && (access & ACC_INTERFACE) == 0 {
-									return Err(~"Only interfaces and java.lang.Object can go without super class");
-								}
-							}
+			match maybe_parents {
+				Err(s) => return Err(s), _ => ()
+			}
 
-							// TODO:
-							let fields_count = reader.read_be_u16() as uint;
-
-							// read fields
-							let methods_count = reader.read_be_u16() as uint;
-
-							// read methods
-							let attrs_count = reader.read_be_u16() as uint;
-
-							return Ok(self.register_class(name, Arc::new(JavaClass::new(
-								name,
-								constants,
-								future_parents
-							))))
-						}
-					}
+			let future_parents = maybe_parents.unwrap();
+			if future_parents.len() == 0 {
+				if name != ~"java.lang.Object" && (access & ACC_INTERFACE) == 0 {
+					return Err(~"Only interfaces and java.lang.Object can go without super class");
 				}
 			}
+
+			// 4. class and instance fields
+			let fields_count = reader.read_be_u16() as uint;
+
+			// 5. class and instance methods
+			let methods_count = reader.read_be_u16() as uint;
+
+			/*
+				// 6. class attributes - we skip them for now
+				let attrs_count = reader.read_be_u16() as uint;
+			*/
+
+			return Ok(self.register_class(name, Arc::new(JavaClass::new(
+				name,
+				constants,
+				future_parents
+			))))
 		}) {
 			Err(e) => Err(~"classloader: unexpected end-of-file or read error"),
 			Ok(T) => T
