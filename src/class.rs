@@ -4,8 +4,8 @@ use extra::future::Future;
 use extra::arc::Arc;
 
 use def::Constant;
-
-mod method;
+use method::JavaMethod;
+use field::JavaField;
 
 
 type JavaClassRef = Arc<JavaClass>;
@@ -16,7 +16,7 @@ pub struct JavaClass {
 	priv attrs : uint,
 	priv constants : ~[Constant],
 	priv parents : ~[ JavaClassRef ],
-	priv methods : ~HashMap<~str, ~method::JavaMethod>,
+	priv methods : ~HashMap<~str, ~JavaMethod>,
 }
 
 

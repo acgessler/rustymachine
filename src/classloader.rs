@@ -15,25 +15,22 @@ use extra::future::Future;
 use extra::arc::{Arc, RWArc, MutexArc};
 
 
-use def::{ConstantPoolTags, Constant};
+use util::assert_no_err;
+use def::*;
 use class::{JavaClass};
 use classpath::{ClassPath};
 
-mod def;
-mod util;
-mod class;
-mod classpath;
 
 
 // shared ref to a java class def
-type JavaClassRef = Arc<JavaClass>;
+pub type JavaClassRef = Arc<JavaClass>;
 
 // future ref to a java class
-type JavaClassFutureRef = Future<Result<JavaClassRef,~str>>;
+pub type JavaClassFutureRef = Future<Result<JavaClassRef,~str>>;
 
 // table of java classes indexed by fully qualified name
-type ClassTable = HashMap<~str, JavaClassRef>;
-type ClassTableRef = MutexArc<ClassTable>;
+pub type ClassTable = HashMap<~str, JavaClassRef>;
+pub type ClassTableRef = MutexArc<ClassTable>;
 
 
 
@@ -41,8 +38,34 @@ static INITIAL_CLASSLOADER_CAPACITY : uint = 1024;
 
 
 
+/** */
+pub trait AbstractClassLoader {
+	fn load(&mut self, name : &str) -> JavaClassFutureRef;
+}
+
+
+
+// Mock class loader
+pub struct DummyClassLoader;
+impl AbstractClassLoader for DummyClassLoader {
+	fn load(&mut self, name : &str) -> JavaClassFutureRef
+	{
+		return Future::from_value(Err(~"DUMMY"));
+	}
+}
+
+
+
+// Real, user-facing class loader that maintains global state
 pub struct ClassLoader {
 	priv inner : ClonableClassLoader
+}
+
+impl AbstractClassLoader for ClassLoader {
+	fn load(&mut self, name : &str) -> JavaClassFutureRef
+	{
+		return self.add_from_classfile(name);
+	}
 }
 
 
@@ -90,8 +113,6 @@ impl ClassLoader {
 
 
 	// internal
-
-
 	// ----------------------------------------------
 	fn get_class_table(&self) -> ClassTableRef
 	{
@@ -102,9 +123,24 @@ impl ClassLoader {
 
 
 
+// The difference between ClassLoader and ClonableClassLoader is that the latter
+// is clonable and only holds Arcs to (mutable) shared state. During class loading,
+// instances of ClonableClassLoader are copied and send to futures that do the
+// actual loading.
+//
+// ClassLoader is the API that is visible to the user as it may encompass further 
+// utilities or members, and does not bear the ambiguity of being copyable.
 struct ClonableClassLoader {
 	priv classpath : ClassPath,
 	priv ClassTableRef : ClassTableRef
+}
+
+
+impl AbstractClassLoader for ClonableClassLoader {
+	fn load(&mut self, name : &str) -> JavaClassFutureRef
+	{
+		return self.clone().add_from_classfile(name);
+	}
 }
 
 
@@ -203,17 +239,18 @@ impl ClonableClassLoader {
 						Ok(future_parents) => {
 
 							if future_parents.len() == 0 {
-								if name != ~"java.lang.Object" && (access & def::ACC_INTERFACE) == 0 {
+								if name != ~"java.lang.Object" && (access & ACC_INTERFACE) == 0 {
 									return Err(~"Only interfaces and java.lang.Object can go without super class");
 								}
 							}
 
 							// TODO:
 							let fields_count = reader.read_be_u16() as uint;
+
+							// read fields
 							let methods_count = reader.read_be_u16() as uint;
 
 							// read methods
-
 							let attrs_count = reader.read_be_u16() as uint;
 
 							return Ok(self.register_class(name, Arc::new(JavaClass::new(
@@ -355,10 +392,10 @@ impl ClonableClassLoader {
 		assert!(oneb_index != 0 && oneb_index <= constants.len());
 
 		match constants[oneb_index - 1] {
-			def::CONSTANT_class_info(ref utf8_idx) => {
+			CONSTANT_class_info(ref utf8_idx) => {
 				assert!(*utf8_idx != 0 && (*utf8_idx as uint) <= constants.len());
 				match constants[*utf8_idx - 1] {
-					def::CONSTANT_utf8_info(ref s) => Ok(s.clone().replace("/",".")),
+					CONSTANT_utf8_info(ref s) => Ok(s.clone().replace("/",".")),
 					_ => Err(~"class name cpool entry is not a CONSTANT_Utf8"),
 				}
 			},
@@ -387,27 +424,27 @@ impl ClonableClassLoader {
 		// for our caller to trap?
 
 		let res = match tag {
-			def::CONSTANT_class => 
-				def::CONSTANT_class_info(cindex()),
-			def::CONSTANT_fieldref => 
-				def::CONSTANT_fieldref_info(cindex(), cindex()),
-			def::CONSTANT_methodref => 
-				def::CONSTANT_methodref_info(cindex(), cindex()),
-			def::CONSTANT_ifacemethodref =>
-				def::CONSTANT_ifacemethodref_info(cindex(), cindex()),
-			def::CONSTANT_string => 
-				def::CONSTANT_string_info(cindex()),
-			def::CONSTANT_integer => 
-				def::CONSTANT_integer_info(reader.read_be_i32()),
-			def::CONSTANT_float => 
-				def::CONSTANT_float_info(reader.read_be_f32()),
-			def::CONSTANT_long => 
-				def::CONSTANT_long_info(reader.read_be_i64()),
-			def::CONSTANT_double => 
-				def::CONSTANT_double_info(reader.read_be_f64()),
-			def::CONSTANT_nameandtype => 
-				def::CONSTANT_nameandtype_info(cindex(),cindex()),
-			def::CONSTANT_utf8 => {
+			CONSTANT_class => 
+				CONSTANT_class_info(cindex()),
+			CONSTANT_fieldref => 
+				CONSTANT_fieldref_info(cindex(), cindex()),
+			CONSTANT_methodref => 
+				CONSTANT_methodref_info(cindex(), cindex()),
+			CONSTANT_ifacemethodref =>
+				CONSTANT_ifacemethodref_info(cindex(), cindex()),
+			CONSTANT_string => 
+				CONSTANT_string_info(cindex()),
+			CONSTANT_integer => 
+				CONSTANT_integer_info(reader.read_be_i32()),
+			CONSTANT_float => 
+				CONSTANT_float_info(reader.read_be_f32()),
+			CONSTANT_long => 
+				CONSTANT_long_info(reader.read_be_i64()),
+			CONSTANT_double => 
+				CONSTANT_double_info(reader.read_be_f64()),
+			CONSTANT_nameandtype => 
+				CONSTANT_nameandtype_info(cindex(),cindex()),
+			CONSTANT_utf8 => {
 				let length = reader.read_be_u16() as uint;
 				let raw = reader.read_bytes(length);
 
@@ -418,26 +455,26 @@ impl ClonableClassLoader {
 				match s {
 					None => {
 						err = Some(~"constant pool entry is not  valid UTF8 string");
-						def::CONSTANT_utf8_info(~"")
+						CONSTANT_utf8_info(~"")
 					},
 					Some(s) => {
 						debug!("utf8 string: {}", s);
-						def::CONSTANT_utf8_info(s)
+						CONSTANT_utf8_info(s)
 					}
 				}
 			},
-			def::CONSTANT_methodhandle => 
-				def::CONSTANT_methodhandle_info(reader.read_u8(), cindex()),
-			def::CONSTANT_methodtype => 
-				def::CONSTANT_methodtype_info(cindex()),
-			def::CONSTANT_invokedynamic => 
-				def::CONSTANT_invokedynamic_info(reader.read_be_u16(), cindex()),
+			CONSTANT_methodhandle => 
+				CONSTANT_methodhandle_info(reader.read_u8(), cindex()),
+			CONSTANT_methodtype => 
+				CONSTANT_methodtype_info(cindex()),
+			CONSTANT_invokedynamic => 
+				CONSTANT_invokedynamic_info(reader.read_be_u16(), cindex()),
 		};
 
 		// some cpool entries take two indices. According to the spec,
 		// this was "a poor choice".
 		*skip = match tag {
-			def::CONSTANT_long | def::CONSTANT_double => 1,
+			CONSTANT_long | CONSTANT_double => 1,
 			_ => 0
 		};
 
@@ -458,6 +495,20 @@ impl Clone for ClonableClassLoader {
 }
 
 
+
+
+pub fn test_get_dummy_classloader() -> DummyClassLoader
+{
+	return DummyClassLoader;
+}
+
+pub fn test_get_real_classloader() -> ClassLoader
+{
+	return ClassLoader::new("../test/java;../rt");
+}
+
+
+
 #[test]
 fn test_class_loader_fail() {
 	let mut cl = ClassLoader::new("");
@@ -467,8 +518,14 @@ fn test_class_loader_fail() {
 
 #[test]
 fn test_class_loader_good() {
-	let mut cl = ClassLoader::new("../test/java;../rt");
-	let v = cl.add_from_classfile("EmptyClass").unwrap();
-	util::assert_no_err(v);
+	let mut cl = test_get_real_classloader();
+	let mut v = cl.add_from_classfile("EmptyClass").unwrap();
+	assert_no_err(&v);
+
+	v = cl.add_from_classfile("FieldAccess").unwrap();
+	assert_no_err(&v);
+
+	v = cl.add_from_classfile("InterfaceImpl").unwrap();
+	assert_no_err(&v);
 }
 

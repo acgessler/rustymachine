@@ -1,11 +1,21 @@
+#[feature(globs)];
+
 extern mod extra;
+extern mod std;
 
 use extra::getopts::{optopt, optflag, getopts, Opt};
 use std::os;
 
 use std::io::{println, File};
 
+mod def;
+mod util;
+mod field;
+mod method;
+mod class;
+mod classpath;
 mod classloader;
+
 
 fn print_usage(program: &str, _opts: &[Opt]) {
     println!("Usage: {} [options] main-class-name", program);
@@ -34,7 +44,7 @@ fn main() {
         None => ~""
     };
     
-	let classld = classloader::ClassLoader::new(classpath);
+	let mut classld = classloader::ClassLoader::new(classpath);
     classld.add_from_classfile(*args.last());
 }
 
