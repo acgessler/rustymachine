@@ -19,7 +19,7 @@ use util::assert_no_err;
 use def::*;
 use class::{JavaClass};
 use classpath::{ClassPath};
-
+use code::{CodeBlock, ExceptionHandler};
 
 
 // shared ref to a java class def
@@ -248,7 +248,7 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
-	// Load the portion of the .class file header that containts 
+	// Load the portion of the .class file header that contains 
 	// the constant value pool (cpool) and parse all entries
 	// into proper structures.
 	fn load_constant_pool(reader: &mut Reader) ->  Result<~[Constant], ~str>
@@ -296,9 +296,28 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
+	// Loads a referenced class that is given by an entry in the cpool
+	fn load_class_from_cpool(&mut self, constants : &[Constant], index : uint)
+		-> Result<JavaClassRef, ~str>
+	{
+		match ClassLoader::resolve_class_cpool_entry(
+			constants, index
+		) {
+			Err(s) => Err(s),
+			Ok(class_name) => {
+				match self.add_from_classfile(class_name).unwrap() {
+					Err(s) => Err("failure loading referenced class: " + s),
+					Ok(cl) => Ok(cl),
+				}
+			}
+		}
+	}
+
+
+	// ----------------------------------------------
 	// Load the portion of a .class file header that lists the class'
-	// super class as well as all implemented interfaces, loads all
-	// of them and returns a list of future classes.
+	// super class as well as all implemented interfaces and loads
+	// all of them
 	fn load_class_parents(&mut self, constants : &[Constant], reader: &mut Reader)  
 		-> Result<~[ JavaClassRef ], ~str>
 	{
@@ -308,36 +327,66 @@ impl ClassLoader {
 
 		// parent_index is 0 for interfaces, and for java.lang.Object
 		if parent_index != 0 {
-			match ClassLoader::resolve_class_cpool_entry(
-				constants, parent_index
-			) {
-				Err(s) => return Err(s),
-				Ok(super_class_name) => {
-					match self.add_from_classfile(super_class_name).unwrap() {
-						Err(s) => return Err("failure loading parent class: " + s),
-						Ok(cl) => future_parents.push(cl),
-					}
-				}
+			match self.load_class_from_cpool(constants, parent_index) {
+				Err(s) => return Err("failure loading parent class: " + s),
+				Ok(cl) => future_parents.push(cl)
 			}
 		}
 				
 		let ifaces_count = reader.read_be_u16() as uint;
 		let mut i = 0;
 		while i < ifaces_count {
-			match ClassLoader::resolve_class_cpool_entry(
-				constants, reader.read_be_u16() as uint
-			) {
-				Err(s) => return Err(s),
-				Ok(iface_name) => {
-					match self.add_from_classfile(iface_name).unwrap() {
-						Err(s) => return Err("failure loading interface: " + s),
-						Ok(cl) => future_parents.push(cl),
-					}
-				}
+			let iindex = reader.read_be_u16() as uint;
+			match self.load_class_from_cpool(constants, iindex) {
+				Err(s) => return Err("failure loading parent interface: " + s),
+				Ok(cl) => future_parents.push(cl)
 			}
 			i += 1;
 		}
 		return Ok(future_parents);
+	}
+
+
+	// ----------------------------------------------
+	// Load a single attribute of type [Code] from a a .class file reader 
+	// that is positioned correctly to be right behind the attribute head.
+	// http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-4.html#jvms-4.7.3
+	pub fn load_code_attribute(&mut self, constants : &[Constant], reader: &mut Reader) -> 
+		Result<CodeBlock, ~str>
+	{
+		let max_stack = reader.read_be_u16() as uint;
+		let max_locals = reader.read_be_u16() as uint;
+		let code_len = reader.read_be_u16() as uint;
+
+		let codebytes = reader.read_bytes(code_len);
+
+		// TODO: translate code bytes
+
+		let exc_len = reader.read_be_u16() as uint;
+		let mut i = 0;
+		let mut exc_rec : ~[ExceptionHandler] = ~[];
+		while i < exc_len {
+
+			let start_pc = reader.read_be_u16() as uint;
+			let end_pc = reader.read_be_u16() as uint;
+			let handler_pc = reader.read_be_u16() as uint;
+			let catch_type_index = reader.read_be_u16() as uint;
+
+			match self.load_class_from_cpool(constants, catch_type_index) {
+				Err(s) => return Err("failure loading exception handler class: " + s),
+				Ok(cl) => {
+					exc_rec.push(ExceptionHandler {
+						start_pc : start_pc,
+						end_pc : end_pc,
+						handler_pc : handler_pc,
+						catch_type : cl,
+					});
+				}
+			}
+			i += 1;
+		}
+
+		return Ok(CodeBlock::new(max_stack, max_locals, codebytes, exc_rec));
 	}
 
 

@@ -15,6 +15,7 @@ mod method;
 mod class;
 mod classpath;
 mod classloader;
+mod code;
 
 
 fn print_usage(program: &str, _opts: &[Opt]) {
