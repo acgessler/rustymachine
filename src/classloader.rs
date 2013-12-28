@@ -17,16 +17,12 @@ use extra::arc::{Arc, RWArc, MutexArc};
 
 use util::assert_no_err;
 use def::*;
-use class::{JavaClass};
+use class::{JavaClass, JavaClassRef, JavaClassFutureRef};
 use classpath::{ClassPath};
 use code::{CodeBlock, ExceptionHandler};
 
 
-// shared ref to a java class def
-pub type JavaClassRef = Arc<JavaClass>;
 
-// future ref to a java class
-pub type JavaClassFutureRef = Future<Result<JavaClassRef,~str>>;
 
 // table of java classes indexed by fully qualified name
 pub type ClassTable = HashMap<~str, JavaClassRef>;
@@ -50,7 +46,7 @@ pub struct DummyClassLoader;
 impl AbstractClassLoader for DummyClassLoader {
 	fn load(&mut self, name : &str) -> JavaClassFutureRef
 	{
-		return Future::from_value(Err(~"DUMMY"));
+		return JavaClassFutureRef::new(Future::from_value(Err(~"DUMMY")));
 	}
 }
 
@@ -123,7 +119,7 @@ impl ClassLoader {
 		// do nothing if the class is already loaded
 		match self.get_class(name) {
 			Some(class) => {
-				return Future::from_value(Ok(class));
+				return JavaClassFutureRef::new(Future::from_value(Ok(class)));
 			},
 			None => ()
 		}
@@ -131,7 +127,7 @@ impl ClassLoader {
 		let cname = name.into_owned();
 		let self_clone_outer = self.clone();
 
-		do Future::spawn {
+		let fut = do Future::spawn {
 			// TODO: if we don't clone() twice, borrowch complains.
 			// May be resolved through https://github.com/mozilla/rust/issues/10617
 			let mut self_clone = self_clone_outer.clone();
@@ -141,7 +137,8 @@ impl ClassLoader {
 					self_clone.add_from_classfile_bytes(cname, bytes)
 				}
 			}
-		}
+		};
+		JavaClassFutureRef::new(fut)
 	}
 
 
@@ -296,7 +293,13 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
-	// Loads a referenced class that is given by an entry in the cpool
+	// Loads a referenced class that is given by an entry in the cpool.
+	// When calling this method, be sure to do so in a manner that 
+	// avoids cyclic dependencies between classes. The primary
+	// inheritance graph is a DAG and it is therefore safe but cross-references
+	// between fields and exception handlers may include cycles. Use
+	// load_future_class_from_cpool for this purpose.
+	//
 	fn load_class_from_cpool(&mut self, constants : &[Constant], index : uint)
 		-> Result<JavaClassRef, ~str>
 	{
@@ -305,11 +308,27 @@ impl ClassLoader {
 		) {
 			Err(s) => Err(s),
 			Ok(class_name) => {
-				match self.add_from_classfile(class_name).unwrap() {
+				match self.add_from_classfile(class_name).await() {
 					Err(s) => Err("failure loading referenced class: " + s),
 					Ok(cl) => Ok(cl),
 				}
 			}
+		}
+	}
+
+
+	// ----------------------------------------------
+	// Obtain a future ref on a referenced class that is given by an entry
+	//  in the cpool. This method does not block on loading that class and
+	// is thus safe to use with cyclic references between classes.
+	fn load_future_class_from_cpool(&mut self, constants : &[Constant], index : uint)
+		-> JavaClassFutureRef
+	{
+		match ClassLoader::resolve_class_cpool_entry(
+			constants, index
+		) {
+			Err(s) => JavaClassFutureRef::new_error(s),
+			Ok(class_name) => self.add_from_classfile(class_name),
 		}
 	}
 
@@ -372,17 +391,18 @@ impl ClassLoader {
 			let handler_pc = reader.read_be_u16() as uint;
 			let catch_type_index = reader.read_be_u16() as uint;
 
-			match self.load_class_from_cpool(constants, catch_type_index) {
-				Err(s) => return Err("failure loading exception handler class: " + s),
+			match ClassLoader::resolve_class_cpool_entry(constants, catch_type_index) {
 				Ok(cl) => {
 					exc_rec.push(ExceptionHandler {
 						start_pc : start_pc,
 						end_pc : end_pc,
 						handler_pc : handler_pc,
 						catch_type : cl,
-					});
-				}
+					})
+				},
+				Err(s) => return Err(s)
 			}
+
 			i += 1;
 		}
 
@@ -519,20 +539,20 @@ pub fn test_get_real_classloader() -> ClassLoader
 #[test]
 fn test_class_loader_fail() {
 	let mut cl = ClassLoader::new_from_string("");
-	assert!(cl.add_from_classfile("FooClassDoesNotExist").unwrap().is_err());
+	assert!(cl.add_from_classfile("FooClassDoesNotExist").await().is_err());
 }
 
 
 #[test]
 fn test_class_loader_good() {
 	let mut cl = test_get_real_classloader();
-	let mut v = cl.add_from_classfile("EmptyClass").unwrap();
+	let mut v = cl.add_from_classfile("EmptyClass").await();
 	assert_no_err(&v);
 
-	v = cl.add_from_classfile("FieldAccess").unwrap();
+	v = cl.add_from_classfile("FieldAccess").await();
 	assert_no_err(&v);
 
-	v = cl.add_from_classfile("InterfaceImpl").unwrap();
+	v = cl.add_from_classfile("InterfaceImpl").await();
 	assert_no_err(&v);
 }
 

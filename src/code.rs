@@ -1,6 +1,6 @@
 
 
-use classloader::{JavaClassRef};
+use class::{JavaClassFutureRef};
 
 
 pub struct ExceptionHandler
@@ -8,7 +8,7 @@ pub struct ExceptionHandler
 	start_pc : uint,
 	end_pc : uint,
 	handler_pc : uint,
-	catch_type : JavaClassRef,
+	catch_type : ~str,
 }
 
 
@@ -35,5 +35,11 @@ impl CodeBlock
 		}
 	}
 
+
+	// ----------------------------------------------
+	pub fn decode_opcodes()
+	{
+		// TODO
+	}
 }
 
