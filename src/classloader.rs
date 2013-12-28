@@ -124,6 +124,8 @@ impl ClassLoader {
 			None => ()
 		}
 
+		// TODO: what if it is pending?
+
 		let cname = name.into_owned();
 		let self_clone_outer = self.clone();
 

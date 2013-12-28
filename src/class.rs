@@ -65,7 +65,7 @@ pub struct JavaClass {
 	priv parents : ~[ JavaClassRef ],
 	priv methods : ~HashMap<~str, ~JavaMethod>,
 
-	// TODO: runtime layout table
+	// TODO: runtime layout table constructed for instance fields and class fields
 }
 
 
