@@ -254,6 +254,7 @@ impl ClonableClassLoader {
 							let attrs_count = reader.read_be_u16() as uint;
 
 							return Ok(self.register_class(name, Arc::new(JavaClass::new(
+								name,
 								constants,
 								future_parents
 							))))

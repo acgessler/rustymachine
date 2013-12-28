@@ -23,11 +23,11 @@ pub struct JavaClass {
 impl JavaClass {
 
 	// ----------------------------------------------
-	pub fn new(constants : ~[Constant], parents : ~[ JavaClassRef ] ) 
+	pub fn new(name : &str, constants : ~[Constant], parents : ~[ JavaClassRef ] ) 
 	-> JavaClass 
 	{
 		JavaClass { 
-			name: ~"", 
+			name: name.into_owned(), 
 			attrs: 0, 
 			methods : ~HashMap::with_capacity(16),
 			constants : constants,
