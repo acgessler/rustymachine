@@ -134,7 +134,7 @@ fn test_field_desc_parsing() {
 		_ => assert!(false)
 	}
 
-	cl = JavaField::resolve_field_desc(&"[[LEmptyClass",dd);
+	cl = JavaField::resolve_field_desc(&"[[LEmptyClass;",dd);
 	assert_no_err(&cl);
 	match cl {
 		Ok(FD_ArrayType(~FD_ArrayType(~FD_ObjectType(c)))) => assert!(*c.get().get_name() == ~"EmptyClass"),
