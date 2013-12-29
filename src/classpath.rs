@@ -77,10 +77,15 @@ impl Clone for ClassPath {
 }
 
 
-#[test]
-fn test_class_path_decomposition() {
-	let cp = ClassPath::new_from_string("~/some/other/bar; /bar/baz;dir ;");
-	assert_eq!(*cp.get_paths(),~[~".",~"~/some/other/bar", ~"/bar/baz", ~"dir"]);
-	assert_eq!(*cp.get_paths(),~[~".",~"~/some/other/bar", ~"/bar/baz", ~"dir"]);
-}
+#[cfg(test)]
+mod tests {
+	use classpath::*;
 
+	#[test]
+	fn test_class_path_decomposition() {
+		let cp = ClassPath::new_from_string("~/some/other/bar; /bar/baz;dir ;");
+		assert_eq!(*cp.get_paths(),~[~".",~"~/some/other/bar", ~"/bar/baz", ~"dir"]);
+		assert_eq!(*cp.get_paths(),~[~".",~"~/some/other/bar", ~"/bar/baz", ~"dir"]);
+	}
+
+}

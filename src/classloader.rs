@@ -14,8 +14,6 @@ use std::str::from_utf8_owned_opt;
 use extra::future::Future;
 use extra::arc::{Arc, RWArc, MutexArc};
 
-
-use util::assert_no_err;
 use def::*;
 use class::{JavaClass, JavaClassRef, JavaClassFutureRef};
 use classpath::{ClassPath};
@@ -30,14 +28,10 @@ pub type ClassTableRef = MutexArc<ClassTable>;
 
 
 
-
-
-
 // Abstract trait to describe a class loader's basic behaviour
 pub trait AbstractClassLoader {
 	fn load(&mut self, name : &str) -> JavaClassFutureRef;
 }
-
 
 
 // Mock class loader that refuses to load any classes and instead just
@@ -525,36 +519,40 @@ impl Clone for ClassLoader {
 
 
 
+#[cfg(test)]
+mod tests {
+	use classloader::*;
+	use util::{assert_no_err};
 
-pub fn test_get_dummy_classloader() -> DummyClassLoader
-{
-	return DummyClassLoader;
+	pub fn test_get_dummy_classloader() -> DummyClassLoader
+	{
+		return DummyClassLoader;
+	}
+
+	pub fn test_get_real_classloader() -> ClassLoader
+	{
+		return ClassLoader::new_from_string("../test/java;../rt");
+	}
+
+
+
+	#[test]
+	fn test_class_loader_fail() {
+		let mut cl = ClassLoader::new_from_string("");
+		assert!(cl.add_from_classfile("FooClassDoesNotExist").await().is_err());
+	}
+
+
+	#[test]
+	fn test_class_loader_good() {
+		let mut cl = test_get_real_classloader();
+		let mut v = cl.add_from_classfile("EmptyClass").await();
+		assert_no_err(&v);
+
+		v = cl.add_from_classfile("FieldAccess").await();
+		assert_no_err(&v);
+
+		v = cl.add_from_classfile("InterfaceImpl").await();
+		assert_no_err(&v);
+	}
 }
-
-pub fn test_get_real_classloader() -> ClassLoader
-{
-	return ClassLoader::new_from_string("../test/java;../rt");
-}
-
-
-
-#[test]
-fn test_class_loader_fail() {
-	let mut cl = ClassLoader::new_from_string("");
-	assert!(cl.add_from_classfile("FooClassDoesNotExist").await().is_err());
-}
-
-
-#[test]
-fn test_class_loader_good() {
-	let mut cl = test_get_real_classloader();
-	let mut v = cl.add_from_classfile("EmptyClass").await();
-	assert_no_err(&v);
-
-	v = cl.add_from_classfile("FieldAccess").await();
-	assert_no_err(&v);
-
-	v = cl.add_from_classfile("InterfaceImpl").await();
-	assert_no_err(&v);
-}
-

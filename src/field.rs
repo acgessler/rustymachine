@@ -5,7 +5,6 @@ use extra::arc::{MutexArc};
 
 use classloader::*;
 use class::{JavaClassFutureRef};
-use util::{assert_is_err, assert_no_err};
 
 
 // FieldDescriptor is modelled after the official grammar for Java field descriptors from 
@@ -121,46 +120,47 @@ impl JavaField {
 
 
 
+#[cfg(test)]
+mod tests {
+	use field::*;
+	use util::{assert_is_err, assert_no_err};
 
+	#[test]
+	fn test_field_desc_parsing() {
+		// TODO: find better way to formulare these tests
+		let mut cl = JavaField::resolve_field_desc(&"Ljava/lang/Object;");
+		assert_no_err(&cl);
+		match(cl) {
+			Ok(FD_ObjectType(c)) => {
+				assert!(c == ~"java.lang.Object")
+			},
+			_ => assert!(false)
+		}
 
+		cl = JavaField::resolve_field_desc(&"[[LEmptyClass;");
+		assert_no_err(&cl);
+		match cl {
+			Ok(FD_ArrayType(~FD_ArrayType(~FD_ObjectType(c)))) => {
+				assert!(c == ~"EmptyClass")
+			},
+			_ => assert!(false)
+		}
 
-
-#[test]
-fn test_field_desc_parsing() {
-	// TODO: find better way to formulare these tests
-	let mut cl = JavaField::resolve_field_desc(&"Ljava/lang/Object;");
-	assert_no_err(&cl);
-	match(cl) {
-		Ok(FD_ObjectType(c)) => {
-			assert!(c == ~"java.lang.Object")
-		},
-		_ => assert!(false)
+		cl = JavaField::resolve_field_desc(&"B");
+		assert_no_err(&cl);
+		match cl {
+			Ok(FD_BaseType(bt)) => assert!(bt == BT_B_byte),
+			_ => assert!(false)
+		}
 	}
 
-	cl = JavaField::resolve_field_desc(&"[[LEmptyClass;");
-	assert_no_err(&cl);
-	match cl {
-		Ok(FD_ArrayType(~FD_ArrayType(~FD_ObjectType(c)))) => {
-			assert!(c == ~"EmptyClass")
-		},
-		_ => assert!(false)
-	}
 
-	cl = JavaField::resolve_field_desc(&"B");
-	assert_no_err(&cl);
-	match cl {
-		Ok(FD_BaseType(bt)) => assert!(bt == BT_B_byte),
-		_ => assert!(false)
+	#[test]
+	fn test_field_desc_parsing_fail() {
+		assert_is_err(&JavaField::resolve_field_desc(&"Ljava/lang/Object"));
+		assert_is_err(&JavaField::resolve_field_desc(&"Ljava/lang/Object;["));
+		assert_is_err(&JavaField::resolve_field_desc(&""));
+		assert_is_err(&JavaField::resolve_field_desc(&"b"));
+		assert_is_err(&JavaField::resolve_field_desc(&"["));
 	}
 }
-
-
-#[test]
-fn test_field_desc_parsing_fail() {
-	assert_is_err(&JavaField::resolve_field_desc(&"Ljava/lang/Object"));
-	assert_is_err(&JavaField::resolve_field_desc(&"Ljava/lang/Object;["));
-	assert_is_err(&JavaField::resolve_field_desc(&""));
-	assert_is_err(&JavaField::resolve_field_desc(&"b"));
-	assert_is_err(&JavaField::resolve_field_desc(&"["));
-}
-
