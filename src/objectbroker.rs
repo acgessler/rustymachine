@@ -103,8 +103,12 @@ impl ObjectBroker {
 	// operation.
 	pub fn launch(mut self) -> SharedChan<ObjectBrokerMessage> {
 		let ret_chan = self.in_shared_chan.clone();
+
+		// ownership of th ObjectBroker instance moves into the task,
+		// all the caller gets back is a channel to communicate.
 		do spawn {
-			self.task_main();
+			let mut s = self; 
+			while s.handle_message() {}
 		}
 		return ret_chan;
 	}
@@ -112,93 +116,92 @@ impl ObjectBroker {
 	// IMPL
 
 	// ----------------------------------------------
-	fn task_main(mut self) {
+	fn handle_message(&mut self) -> bool {
 		let ref mut objects = self.objects_with_owners;
 		let ref mut threads = self.out_chan;
 
-		loop {
-			match self.in_port.recv() {
-				OB_RQ_ADD_REF(a,b) => {
-					// for somebody to have a reference to a field and thus
-					// being able to addref/release it, they must have had
-					// accss to an object that was owned by this thread.
-					// As this object must have been transferred using the
-					// object broker and messages are guaranteed to be 
-					// ordered, we must already know about that object.
-					
-					// Therefore, whether the object is present in the HM
-					// is safe for determining whether it is new.
-					match objects.find(&b) {
-						Some(owner) => {
-							let t = threads.get(owner);
-							t.send(OB_RQ_ADD_REF(a,b));
-							continue;
-						},
-						_ => (),
-					}
-					objects.insert(b,a);
+		match self.in_port.recv() {
+			OB_RQ_ADD_REF(a,b) => {
+				// for somebody to have a reference to a field and thus
+				// being able to addref/release it, they must have had
+				// accss to an object that was owned by this thread.
+				// As this object must have been transferred using the
+				// object broker and messages are guaranteed to be 
+				// ordered, we must already know about that object.
+				
+				// Therefore, whether the object is present in the HM
+				// is safe for determining whether it is new.
+				match objects.find(&b) {
+					Some(owner) => {
+						let t = threads.get(owner);
+						t.send(OB_RQ_ADD_REF(a,b));
+						return true;
+					},
+					_ => (),
 				}
-
-				OB_RQ_RELEASE(a,b) => {
-					// correctness follows by the same reasoning as for AddRef()
-					let owner = *objects.get(&b);
-					if owner == a {
-						objects.remove(&b);
-					}
-					else {
-						let t = threads.get(&owner);
-						t.send(OB_RQ_RELEASE(a,b));
-					}
-				},
-
-
-				OB_RQ_WHO_OWNS(a,b) => {
-					let t = threads.get(&a);
-					t.send(OB_RQ_WHO_OWNS(*objects.get(&b),b));
-				},
-
-
-				OB_RQ_OWN(a,b) => {
-					// b must be in objects as per the same reasoning as 
-					// OB_RQ_ADD_REF() is sound.
-
-					let owner = *objects.get(&b);
-					// cannot request object oned by oneself
-					// bookkeeping of own owned objects is consistent,
-					// so failure to hold this would be a logic error.
-					assert!(owner != a);
-
-					// TODO: what if somebody else concurrently requested
-					// owning the object, but has not received it yet?
-
-					let t = threads.get(&owner);
-					t.send(OB_RQ_OWN(a, b));
-				},
-
-
-				OB_RQ_DISOWN(a,b,obj,receiver) => {
-					// must own object to be able to disown it
-					assert!(*objects.get(&b) == a);
-
-					*objects.get_mut(&b) = receiver;
-					let t = threads.get(&receiver);
-					t.send(OB_RQ_DISOWN(a, b, obj, receiver));
-				},
-
-
-				OB_REGISTER(a, chan) => {
-					assert!(!threads.contains_key(&a));
-					threads.insert(a, chan);
-					debug!("object broker registered with thread {}", a);
-				},
-
-
-				OB_SHUTDOWN => {
-					debug!("object broker shutting down");
-					break;
-				},
+				objects.insert(b,a);
 			}
+
+			OB_RQ_RELEASE(a,b) => {
+				// correctness follows by the same reasoning as for AddRef()
+				let owner = *objects.get(&b);
+				if owner == a {
+					objects.remove(&b);
+				}
+				else {
+					let t = threads.get(&owner);
+					t.send(OB_RQ_RELEASE(a,b));
+				}
+			},
+
+
+			OB_RQ_WHO_OWNS(a,b) => {
+				let t = threads.get(&a);
+				t.send(OB_RQ_WHO_OWNS(*objects.get(&b),b));
+			},
+
+
+			OB_RQ_OWN(a,b) => {
+				// b must be in objects as per the same reasoning as 
+				// OB_RQ_ADD_REF() is sound.
+
+				let owner = *objects.get(&b);
+				// cannot request object oned by oneself
+				// bookkeeping of own owned objects is consistent,
+				// so failure to hold this would be a logic error.
+				assert!(owner != a);
+
+				// TODO: what if somebody else concurrently requested
+				// owning the object, but has not received it yet?
+
+				let t = threads.get(&owner);
+				t.send(OB_RQ_OWN(a, b));
+			},
+
+
+			OB_RQ_DISOWN(a,b,obj,receiver) => {
+				// must own object to be able to disown it
+				assert!(*objects.get(&b) == a);
+
+				*objects.get_mut(&b) = receiver;
+				let t = threads.get(&receiver);
+				t.send(OB_RQ_DISOWN(a, b, obj, receiver));
+			},
+
+
+			OB_REGISTER(a, chan) => {
+				assert!(!threads.contains_key(&a));
+				threads.insert(a, chan);
+				debug!("object broker registered with thread {}", a);
+			},
+
+
+			OB_SHUTDOWN => {
+				debug!("object broker shutting down");
+				return false;
+			},
 		}
+		return true;
 	}
 }
 
