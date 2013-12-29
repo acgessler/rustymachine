@@ -19,13 +19,13 @@ pub struct ThreadContext {
 	id : uint,
 
 	// heap objects currently owned by this thread context
-	owned_objects : HashMap<uint, ~[u8]>,
+	owned_objects : HashMap<uint, ~[u32]>,
 
 	broker_port : Port<ObjectBrokerRequest>,
 	broker_chan : Chan<ObjectBrokerResponse>,
 
-	opstack : ~[u8],
-	locals : ~[u8],
+	opstack : ~[u32],
+	locals : ~[u32],
 
 	frames : ~[FrameInfo],
 }
@@ -36,11 +36,12 @@ impl ThreadContext {
 
 	pub fn execute() {
 
+
 	}
 
 
 	#[inline]
-	fn access_object(&self, id : uint, fn a(~u8) -> ~u8) -> ~u8 {
+	fn access_object(&self, id : uint, fn a(~u32) -> ~u32) -> ~u32 {
 		// check local hashmap first
 		match self.owned_objects.find(id) {
 			Some(ref obj) => 

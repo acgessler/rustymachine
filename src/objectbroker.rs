@@ -5,37 +5,37 @@ use std::hashmap::{HashMap};
 
 use std::task::{task};
 
+type RawJavaObject = ~[u32];
+
 
 pub enum ObjectBrokerMessage {
 
 	// ## Object management ##
 
-	// request from thread a to addref object b
-	// if the object is not known to the broker yet,
-	// this registers the object for as pertaining
-	// to thread a.
+	// request from thread a to addref object b. If the object 
+	// is not known to the broker yet, this registers the object 
+	// as being owned by thread a.
 	OB_RQ_ADD_REF(uint, uint),
 
-	// request from thread a to release object b
-	// if thread a owns this object, the message informs
-	// the broker that the object has been deleted.
+	// request from thread a to release object b. If thread a 
+	// owns this object, the message informs the broker that the
+	//  object has been deleted.
 	OB_RQ_RELEASE(uint, uint),
 
-	// thread a asks which thread owns object b
-	// response is the same message with a (c, b) tuple,
-	// c is the id of the the owning thread.
+	// thread a asks which thread owns object b. Response is the 
+	// same message with a (c, b) tuple, c is the id of the the 
+	// owning thread.
 	OB_RQ_WHO_OWNS(uint, uint),
 
 	// thread a asks to take over ownership of object b
 	OB_RQ_OWN(uint, uint),
 
-	// thread a abandons ownership of object b
-	// when send from broker to a thread c, this means that this
-	// thread should take over ownership of the object. When
-	// send from a thread to broker in response to a RQ_OWN
-	// message, the last tuple element indicates the original
-	// asker.
-	OB_RQ_DISOWN(uint, uint, ~[u8], uint),
+	// thread a abandons ownership of object b. When send from 
+	// broker to a thread c, this means that this thread should 
+	// take over ownership of the object. When send from a thread 
+	// to broker in response to a RQ_OWN message, the last tuple 
+	// element indicates the original asker.
+	OB_RQ_DISOWN(uint, uint, RawJavaObject, uint),
 
 
 	// ## Thread management ##
@@ -51,7 +51,7 @@ pub enum ObjectBrokerMessage {
 
 
 // The ObjectBroker handles ownership for concurrently accessed
-// objects. At every time, an object has one well-defined owner.
+// objects. At every time, every object has one well-defined owner.
 // If a thread needs access to an object that it does not currently
 // own, it submits a OB_RQ_OWN message to the object broker, which
 // in turn asks the thread who owns the object to relinquish it using
@@ -254,7 +254,7 @@ mod tests {
 
 				let request = output.recv();
 				match request {
-					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,~[0x12 as u8],2)),
+					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,~[0x12 as u32],2)),
 					_ => assert!(false),
 				}
 			},
@@ -270,7 +270,7 @@ mod tests {
 				let response = output.recv();
 				match response {
 					OB_RQ_DISOWN(1,15,val,2) => {
-						assert_eq!(val[0], 0x12 as u8);
+						assert_eq!(val[0], 0x12 as u32);
 						input.send(OB_SHUTDOWN);
 					},
 					_ => assert!(false),
