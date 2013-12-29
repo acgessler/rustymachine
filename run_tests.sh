@@ -1,5 +1,7 @@
 #!/bin/sh
-export RUST_TEST_TASKS=1 
-pushd src
-./main
+
+# avoid obstructing output
+export RUST_TEST_TASKS=1  
+pushd bin
+./rustyvm_test
 popd

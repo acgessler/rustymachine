@@ -1,6 +1,8 @@
 #!/bin/sh
-export RUST_TEST_TASKS=1 
+
+# avoid obstructing output
+export RUST_TEST_TASKS=1  
 export RUST_LOG=main=4 
-pushd src
-./main
+pushd bin
+./rustyvm_test
 popd
