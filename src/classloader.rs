@@ -520,7 +520,7 @@ impl Clone for ClassLoader {
 
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
 	use classloader::*;
 	use util::{assert_no_err};
 

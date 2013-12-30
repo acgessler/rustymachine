@@ -16,7 +16,9 @@ mod class;
 mod classpath;
 mod classloader;
 mod code;
+mod object;
 mod objectbroker;
+mod vm;
 
 
 fn print_usage(program: &str, _opts: &[Opt]) {

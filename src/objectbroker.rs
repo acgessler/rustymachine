@@ -5,7 +5,7 @@ use std::hashmap::{HashMap};
 
 use std::task::{task};
 
-type RawJavaObject = ~[u32];
+use object::{JavaObject};
 
 
 pub enum ObjectBrokerMessage {
@@ -35,7 +35,7 @@ pub enum ObjectBrokerMessage {
 	// take over ownership of the object. When send from a thread 
 	// to broker in response to a RQ_OWN message, the last tuple 
 	// element indicates the original asker.
-	OB_RQ_DISOWN(uint, uint, RawJavaObject, uint),
+	OB_RQ_DISOWN(uint, uint, JavaObject, uint),
 
 
 	// ## Thread management ##
@@ -208,7 +208,11 @@ impl ObjectBroker {
 #[cfg(test)]
 mod tests {
 	use objectbroker::*;
+
+	use object::{JavaObject};
 	use std::task::{task};
+
+	use classloader::tests::{test_get_real_classloader};
 
 	type test_proc = proc(SharedChan<ObjectBrokerMessage>, Port<ObjectBrokerMessage>) -> ();
 
@@ -245,6 +249,9 @@ mod tests {
 
 	#[test]
 	fn test_object_broker() {
+		let mut cl = test_get_real_classloader();
+		let v = cl.add_from_classfile("EmptyClass").unwrap_all();
+
 		let (sync_port, sync_chan) = Chan::new();
 		test_setup(
 			proc(input : SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
@@ -254,7 +261,7 @@ mod tests {
 
 				let request = output.recv();
 				match request {
-					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,~[0x12 as u32],2)),
+					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,JavaObject::new(*v),2)),
 					_ => assert!(false),
 				}
 			},
@@ -270,7 +277,8 @@ mod tests {
 				let response = output.recv();
 				match response {
 					OB_RQ_DISOWN(1,15,val,2) => {
-						assert_eq!(val[0], 0x12 as u32);
+						let cl = val.get_class();
+						assert_eq!(*cl.get().get_name(), ~"EmptyClass");
 						input.send(OB_SHUTDOWN);
 					},
 					_ => assert!(false),
