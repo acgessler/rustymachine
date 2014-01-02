@@ -5,7 +5,7 @@ use std::hashmap::{HashMap};
 
 use std::task::{task};
 
-use object::{JavaObject};
+use object::{JavaObject, JavaObjectId};
 
 
 pub enum ObjectBrokerMessage {
@@ -15,27 +15,27 @@ pub enum ObjectBrokerMessage {
 	// request from thread a to addref object b. If the object 
 	// is not known to the broker yet, this registers the object 
 	// as being owned by thread a.
-	OB_RQ_ADD_REF(uint, uint),
+	OB_RQ_ADD_REF(uint, JavaObjectId),
 
 	// request from thread a to release object b. If thread a 
 	// owns this object, the message informs the broker that the
 	//  object has been deleted.
-	OB_RQ_RELEASE(uint, uint),
+	OB_RQ_RELEASE(uint, JavaObjectId),
 
 	// thread a asks which thread owns object b. Response is the 
 	// same message with a (c, b) tuple, c is the id of the the 
 	// owning thread.
-	OB_RQ_WHO_OWNS(uint, uint),
+	OB_RQ_WHO_OWNS(uint, JavaObjectId),
 
 	// thread a asks to take over ownership of object b
-	OB_RQ_OWN(uint, uint),
+	OB_RQ_OWN(uint, JavaObjectId),
 
 	// thread a abandons ownership of object b. When send from 
 	// broker to a thread c, this means that this thread should 
 	// take over ownership of the object. When send from a thread 
 	// to broker in response to a RQ_OWN message, the last tuple 
 	// element indicates the original asker.
-	OB_RQ_DISOWN(uint, uint, JavaObject, uint),
+	OB_RQ_DISOWN(uint, JavaObjectId, ~JavaObject, uint),
 
 
 	// ## Thread management ##
@@ -64,17 +64,17 @@ pub enum ObjectBrokerMessage {
 // thread ids.
 //
 // When a thread dies, it forwards all of its alive objects to the 
-// object broker using a OB_OUT_RE_OBJ message. The broker, in turn, 
+// object broker using a OB_RQ_DISOWN message. The broker, in turn, 
 // keeps those objects internally until another thread demands to
-// own them.
+// own them. TODO
 pub struct ObjectBroker {
-	objects_with_owners: HashMap<uint, uint>,
+	priv objects_with_owners: HashMap<JavaObjectId, uint>,
 
-	in_port : Port<ObjectBrokerMessage>,
-	out_chan : HashMap<uint, Chan<ObjectBrokerMessage>>,
+	priv in_port : Port<ObjectBrokerMessage>,
+	priv out_chan : HashMap<uint, Chan<ObjectBrokerMessage>>,
 
-	// this is duplicated into all
-	in_shared_chan : SharedChan<ObjectBrokerMessage>,
+	// this is duplicated into all threads
+	priv in_shared_chan : SharedChan<ObjectBrokerMessage>,
 }
 
 
@@ -261,7 +261,7 @@ mod tests {
 
 				let request = output.recv();
 				match request {
-					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,JavaObject::new(*v),2)),
+					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,~JavaObject::new(*v,0),2)),
 					_ => assert!(false),
 				}
 			},

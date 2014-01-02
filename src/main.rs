@@ -18,6 +18,7 @@ mod classloader;
 mod code;
 mod object;
 mod objectbroker;
+mod localheap;
 mod vm;
 
 
