@@ -3,7 +3,7 @@ use std::unstable::atomics::{atomic_add, AcqRel};
 
 use std::hashmap::{HashMap};
 
-use objectbroker::{ObjectBrokerMessage, ObjectBroker, OB_REGISTER};
+use objectbroker::*;
 
 use localheap::{LocalHeap};
 
@@ -168,8 +168,16 @@ impl ThreadContext {
 	// ----------------------------------------------
 	#[inline]
 	fn handle_message(&mut self, o : ObjectBrokerMessage) {
-		
+		match o {
+			// those are not supported in this messaging direction
+			// (i.e. they are only _sent_ to ObjectBroker)
+			OB_REGISTER(a,b) => fail!("REGISTER message not expected here"),
+			OB_RQ_WHO_OWNS(a,b) => fail!("WHO_OWNS message not expected here"),
+
+			message => self.heap.handle_message(message)
+		}
 	}
+
 
 	// ----------------------------------------------
 	#[inline]

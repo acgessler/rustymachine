@@ -96,6 +96,50 @@ impl LocalHeap  {
 
 
 	// ----------------------------------------------
+	// AddRef a specific java object. This works both for local
+	// objects (i.e. owned by current thread) and for remote
+	// objects.
+	pub fn add_ref(&mut self, oid : JavaObjectId) {
+		// if this is a local object, addref it
+		match self.owned_objects.find_mut(&oid) {
+			Some(obj) => {
+				obj.intern_add_ref();
+				return
+			},
+			// fallthru
+			None => () 
+		}
+		// forward request to ObjectBroker for remote objects
+		self.get_thread().send_message(OB_RQ_ADD_REF(self.tid, oid));
+	}
+
+
+	// ----------------------------------------------
+	// AddRef a specific java object. This works both for local
+	// objects (i.e. owned by current thread) and for remote
+	// objects.
+	pub fn release(&mut self, oid : JavaObjectId) {
+		// forward request to ObjectBroker for remote objects
+		if !self.owned_objects.contains_key(&oid) {
+			self.get_thread().send_message(OB_RQ_RELEASE(self.tid, oid));
+			return;
+		}
+
+		{
+			// if this is a local object, release it 
+			let m = self.owned_objects.find_mut(&oid).unwrap();
+			if m.intern_release() {
+				return;
+			}
+		}
+		
+		// the object's reference counter reached zero
+		// and we can therefore safely drop it.
+		self.owned_objects.pop(&oid);
+	}
+
+
+	// ----------------------------------------------
 	// Access a specific object. If the object requested
 	// is owned by the current thread, access is immediately
 	// granted, otherwise the current task blocks until 
@@ -140,8 +184,29 @@ impl LocalHeap  {
 
 	// ----------------------------------------------
 	// Transfer ownership of an object to a particular thread
-	pub fn send_to_thread(&self, obj : ~JavaObject, tid : uint) {
-		let m = OB_RQ_DISOWN(self.tid, obj.get_oid(), obj, tid);
+	pub fn send_to_thread(&mut self, oid : JavaObjectId, tid : uint) {
+		let obj = self.owned_objects.pop(&oid).unwrap();
+		let m = OB_RQ_DISOWN(self.tid, oid, obj, tid);
 		self.get_thread().send_message(m);
+	}
+
+
+	// ----------------------------------------------
+	// Handle any of the OB_RQ messages
+	pub fn handle_message(&mut self, o : ObjectBrokerMessage) {
+		match o {
+			OB_RQ_ADD_REF(a,b) => self.add_ref(b),
+			OB_RQ_RELEASE(a,b) => self.release(b),
+			OB_RQ_OWN(a,b) => self.send_to_thread(b, a),
+			
+			OB_RQ_DISOWN(a,b,obj,rec) => {
+				// currently we should not be receiving objects that we
+				// did not request using OB_RQ_OWN
+				assert_eq!(rec, self.tid);
+				self.owned_objects.insert(b, obj);
+			},
+
+			_ => fail!("logic error, message unexpected"),
+		}
 	}
 }

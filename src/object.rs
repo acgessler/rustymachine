@@ -55,14 +55,37 @@ impl JavaObject {
 		// TODO: field initialization
 	}
 
+	// ----------------------------------------------
+	// Get the oid (object id) of the object. The oid does
+	// not change during lifetime of the object. oids may 
+	// be recycled after the object's death though.
 	#[inline]
 	pub fn get_oid(&self) -> JavaObjectId {
 		self.oid
 	}
 
+	// ----------------------------------------------
+	// Get the underlying Java type of the object
 	#[inline]
 	pub fn get_class(&self) -> JavaClassRef {
 		self.jclass.clone()
+	}
+
+	// ----------------------------------------------
+	// Use LocalHeap::add_ref() instead
+	#[inline]
+	pub fn intern_add_ref(&mut self) {
+		self.ref_count += 1;
+	}
+
+	// ----------------------------------------------
+	// Use LocalHeap::release() instead
+	// Returns whether the object's ref count is nonzero
+	#[inline]
+	pub fn intern_release(&mut self) -> bool {
+		assert!(self.ref_count >= 1);
+		self.ref_count -= 1;
+		self.ref_count != 0
 	}
 }
 
