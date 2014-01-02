@@ -112,6 +112,8 @@ impl ThreadContext {
 	}
 
 
+	// ----------------------------------------------
+	// Get the unique thread-id of the thread
 	#[inline]
 	pub fn get_tid(&self) -> uint {
 		self.tid
@@ -120,22 +122,31 @@ impl ThreadContext {
 
 	// ----------------------------------------------
 	// Handle incoming messages from ObjectBroker until a message
-	// satifies the given predicate. Messages are processed before
-	// the predicate is consulted. This method blocks until a message
-	// is received that satifies the predicate.
-	pub fn handle_messages_until(&self, func : |o : ObjectBrokerMessage| -> bool) {
+	// satifies the given predicate. Messages are processed after
+	// the predicate is consulted, but the message for which the
+	// predicate returns true is still processed. 
+	//
+	// This method blocks until a message is received that satifies 
+	// the predicate.
+	pub fn handle_messages_until(&mut self, pred : |o : &ObjectBrokerMessage| -> bool) {
+		loop {
+			let msg = self.broker_port.recv();
+			let b = pred(&msg);
 
+			self.handle_message(msg);
+			if b {
+				break;
+			}
+		}
 	}
 
 
 	// ----------------------------------------------
-	// Sends a message to ObjectBroker, does not block.
+	// Sends a message to another thread via ObjectBroker, does 
+	// not block.
 	pub fn send_message(&self, msg : ObjectBrokerMessage) {
-
+		self.broker_chan.send(msg);
 	}
-
-
-
 
 
 	// ----------------------------------------------
@@ -156,19 +167,15 @@ impl ThreadContext {
 
 	// ----------------------------------------------
 	#[inline]
+	fn handle_message(&mut self, o : ObjectBrokerMessage) {
+		
+	}
+
+	// ----------------------------------------------
+	#[inline]
 	fn op(&mut self) {
 
 	}
-
-	/*
-
-	#[inline]
-	fn access_object(&self, id : uint, fn a(~u32) -> ~u32) -> ~u32 {
-		// check local hashmap first
-		//match self.owned_objects.find(id) {
-		//	Some(ref obj) => 
-		//}
-	} */
 }
 
 

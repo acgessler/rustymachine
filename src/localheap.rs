@@ -64,6 +64,10 @@ impl LocalHeap  {
 		unsafe { &*self.thread }
 	}
 
+	fn get_thread_mut<'t>(&'t self) -> &'t mut ThreadContext {
+		unsafe { &mut *self.thread }
+	}
+
 
 	// ----------------------------------------------
 	pub fn new_object(&mut self, jclass : JavaClassRef) -> JavaObjectId {
@@ -79,7 +83,7 @@ impl LocalHeap  {
 
 		// tell the object broker to ensure other threads
 		// can request the object by its oid
-		self.get_thread().send_message(OB_RQ_ADD_REF(self.tid, id));
+		self.get_thread_mut().send_message(OB_RQ_ADD_REF(self.tid, id));
 		self.owned_objects.insert(id, ~JavaObject::new(jclass, id));
 		id
 	}
@@ -116,14 +120,14 @@ impl LocalHeap  {
 		}
 
 		self.get_thread().send_message(OB_RQ_OWN(self.tid, oid));
-		self.get_thread().handle_messages_until(|msg : ObjectBrokerMessage| -> bool {
-			match msg {
-				OB_RQ_DISOWN(rtid, roid, obj, rec) => {
+		self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| -> bool {
+			match *msg {
+				OB_RQ_DISOWN(ref rtid, ref roid, ref obj, ref rec) => {
 					// when waiting for objects, we always block on
 					// obtaining them so it is not possible that 
 					// multiple requests are sent and responses
 					// received in a different order.
-					assert_eq!(rec, self.tid);
+					assert_eq!(*rec, self.tid);
 					true
 				},
 				_ => false
