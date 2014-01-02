@@ -115,23 +115,20 @@ impl LocalHeap  {
 			None => () 
 		}
 
-		{
-			let ref thread = self.get_thread();
-			thread.send_message(OB_RQ_OWN(self.tid, oid));
-			thread.handle_messages_until(|msg : ObjectBrokerMessage| -> bool {
-				match msg {
-					OB_RQ_DISOWN(rtid, roid, obj, rec) => {
-						// when waiting for objects, we always block on
-						// obtaining them so it is not possible that 
-						// multiple requests are sent and responses
-						// received in a different order.
-						assert_eq!(rec, self.tid);
-						true
-					},
-					_ => false
-				}
-			});
-		}
+		self.get_thread().send_message(OB_RQ_OWN(self.tid, oid));
+		self.get_thread().handle_messages_until(|msg : ObjectBrokerMessage| -> bool {
+			match msg {
+				OB_RQ_DISOWN(rtid, roid, obj, rec) => {
+					// when waiting for objects, we always block on
+					// obtaining them so it is not possible that 
+					// multiple requests are sent and responses
+					// received in a different order.
+					assert_eq!(rec, self.tid);
+					true
+				},
+				_ => false
+			}
+		});
 
 		self.access_object(oid, wrap)
 	}
