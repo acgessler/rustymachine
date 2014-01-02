@@ -8,15 +8,19 @@ use std::ptr;
 use vm::{ThreadContext};
 use object::{JavaObject, JavaObjectId};
 use class::{JavaClassRef};
-use objectbroker::{ObjectBrokerMessage, OB_RQ_DISOWN, OB_RQ_OWN, OB_RQ_ADD_REF, OB_RQ_RELEASE};
+use objectbroker::*;
+
 
 // LocalHeap is a thread-local utility for threads to create,
 // destroy and access Java objects. Even though it is technically
 // not a heap (actual heap management is forwarded to Rust's
 // runtime heap manager), it is referred to as such because of it
-// behaviour which is to provide the Java heap. LocalHeap is tightly 
-// coupled to a ThreadContext. For cross-thread access to objects, 
-// LocalHeap holds a connection to the VM's ObjectBroker.
+// behaviour which is to provide the Java heap.
+//
+// LocalHeap is tightly 1:1 coupled to a ThreadContext. 
+// ThreadContext forwards all OB_RQ messages that it receives from 
+// ObjectBroker to LocalHeap.
+
 
 pub struct LocalHeap {
 	// backref to owning thread. Unfortunately a borrowed ref
