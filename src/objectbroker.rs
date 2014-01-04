@@ -8,34 +8,75 @@ use std::task::{task};
 use object::{JavaObject, JavaObjectId};
 
 
-pub enum ObjectBrokerMessage {
 
-	// ## Object management ##
+// Enumerates all possible types of accessing objects.
+// Threads wishing to acquire ownership of an object specify one of
+// these access modi and are served accordingly.
+#[deriving(Eq)]
+pub enum RequestObjectAccessType {
+
+	// Normal access - any access of an object's field requires
+	// threads to own objects, which is made possible through
+	// this access mode. Arbitrary modifications are possible,
+	// but no guarantee is made that between two instructions on
+	// one thread context not another thread kick in and obtains
+	// access.
+	OBJECT_ACCESS_Normal,
+
+	// Request to also own the object's monitor, thus enforcing
+	// mutual exclusion with other threads who also go through
+	// the monitor for accessing the object.
+	//
+	// Note that this does *not* actually enter the monitor,
+	// it only ensures that the object's monitor is not currently
+	// acquired by somebody else.
+	OBJECT_ACCESS_Monitor,
+
+	// Request to also own the object's monitor, and to be given
+	// preference over threads attempting to access with the
+	// OBJECT_ACCESS_Monitor flag. This is used in response to
+	// a wait() call on a monitor to make sure that such threads
+	// are given preference over threads accessing a monitor from
+	// outside.
+	OBJECT_ACCESS_MonitorPriority,
+}
+
+
+pub enum RemoteObjectOpMessage {
 
 	// request from thread a to addref object b. If the object 
 	// is not known to the broker yet, this registers the object 
 	// as being owned by thread a.
-	OB_RQ_ADD_REF(uint, JavaObjectId),
+	REMOTE_ADD_REF,
 
 	// request from thread a to release object b. If thread a 
 	// owns this object, the message informs the broker that the
-	//  object has been deleted.
-	OB_RQ_RELEASE(uint, JavaObjectId),
+	// object has been deleted.
+	REMOTE_RELEASE,
 
 	// thread a asks which thread owns object b. Response is the 
 	// same message with a (c, b) tuple, c is the id of the the 
 	// owning thread.
-	OB_RQ_WHO_OWNS(uint, JavaObjectId),
+	REMOTE_WHO_OWNS,
 
-	// thread a asks to take over ownership of object b
-	OB_RQ_OWN(uint, JavaObjectId),
+	// thread a asks to take over ownership of object b with the
+	// given access type. When granted, a OB_RQ_DISOWN message
+	// returns the object.
+	REMOTE_OWN(RequestObjectAccessType),
 
 	// thread a abandons ownership of object b. When send from 
 	// broker to a thread c, this means that this thread should 
 	// take over ownership of the object. When send from a thread 
 	// to broker in response to a RQ_OWN message, the last tuple 
 	// element indicates the original asker.
-	OB_RQ_DISOWN(uint, JavaObjectId, ~JavaObject, uint),
+	REMOTE_DISOWN(~JavaObject, uint),
+}
+
+
+
+pub enum ObjectBrokerMessage {
+	// ## Object management ##
+	OB_REMOTE_OBJECT_OP(uint, JavaObjectId, RemoteObjectOpMessage),
 
 
 	// ## Thread management ##
@@ -47,7 +88,6 @@ pub enum ObjectBrokerMessage {
 	// ## VM management ##
 	OB_SHUTDOWN
 }
-
 
 
 // The ObjectBroker handles ownership for concurrently accessed
@@ -75,11 +115,20 @@ pub struct ObjectBroker {
 
 	// this is duplicated into all threads
 	priv in_shared_chan : SharedChan<ObjectBrokerMessage>,
+
+	// once an OB_RQ_OWN message has been sent to a thread,
+	// all further requests to the same object are saved 
+	// up and dispatched to whomever gains new ownership
+	// of the objects. 
+	priv waiting_shelf : HashMap<JavaObjectId, ~[ObjectBrokerMessage]>
+
+	// TODO: how to guarantee object transfer if threads are blocking?
 }
 
 
 static OB_INITIAL_OBJ_HASHMAP_CAPACITY : uint = 4096;
 static OB_INITIAL_THREAD_CAPACITY : uint = 16;
+static OB_INITIAL_WAITING_SHELF_CAPACITY : uint = 256;
 
 impl ObjectBroker {
 
@@ -93,6 +142,7 @@ impl ObjectBroker {
 			in_port : out,
 			in_shared_chan : input,
 			out_chan : HashMap::with_capacity(OB_INITIAL_THREAD_CAPACITY),
+			waiting_shelf : HashMap::with_capacity(OB_INITIAL_WAITING_SHELF_CAPACITY)
 		}
 	}
 
@@ -117,11 +167,55 @@ impl ObjectBroker {
 
 	// ----------------------------------------------
 	fn handle_message(&mut self) -> bool {
+		match self.in_port.recv() {
+
+			OB_REMOTE_OBJECT_OP(a, b, remote_op) => {
+				self.handle_object_op(a, b, remote_op)
+			},
+
+
+			OB_REGISTER(a, chan) => {
+				let ref mut threads = self.out_chan;
+				assert!(!threads.contains_key(&a));
+				threads.insert(a, chan);
+				debug!("object broker registered with thread {}", a);
+			},
+
+
+			OB_SHUTDOWN => {
+				debug!("object broker shutting down");
+				return false;
+			},
+		}
+		return true;
+	}
+
+
+	// ----------------------------------------------
+	fn handle_object_op(&mut self, a : uint, b : JavaObjectId, op : RemoteObjectOpMessage)
+	{	
 		let ref mut objects = self.objects_with_owners;
 		let ref mut threads = self.out_chan;
+		let ref mut shelf = self.waiting_shelf;
 
-		match self.in_port.recv() {
-			OB_RQ_ADD_REF(a,b) => {
+		// check if the object in question is currently being transferred
+		// between threads and any further requests are therefore shelved
+		// until a new owner is in place
+		match op {
+			REMOTE_DISOWN(ref obj,ref receiver) => (),
+			_ => {
+				match shelf.find_mut(&b) {
+					Some(ref v) => {
+						v.push( OB_REMOTE_OBJECT_OP(a,b,op) );
+						return;
+					},
+					_ => ()
+				}
+			}
+		}
+
+		match op {
+			REMOTE_ADD_REF => {		
 				// for somebody to have a reference to a field and thus
 				// being able to addref/release it, they must have had
 				// accss to an object that was owned by this thread.
@@ -134,15 +228,15 @@ impl ObjectBroker {
 				match objects.find(&b) {
 					Some(owner) => {
 						let t = threads.get(owner);
-						t.send(OB_RQ_ADD_REF(a,b));
-						return true;
+						t.send(OB_REMOTE_OBJECT_OP(a,b,REMOTE_ADD_REF));
+						return;
 					},
 					_ => (),
 				}
 				objects.insert(b,a);
-			}
+			},
 
-			OB_RQ_RELEASE(a,b) => {
+			REMOTE_RELEASE => {
 				// correctness follows by the same reasoning as for AddRef()
 				let owner = *objects.get(&b);
 				if owner == a {
@@ -150,18 +244,18 @@ impl ObjectBroker {
 				}
 				else {
 					let t = threads.get(&owner);
-					t.send(OB_RQ_RELEASE(a,b));
+					t.send(OB_REMOTE_OBJECT_OP(a,b,REMOTE_RELEASE));
 				}
 			},
 
 
-			OB_RQ_WHO_OWNS(a,b) => {
+			REMOTE_WHO_OWNS => {
 				let t = threads.get(&a);
-				t.send(OB_RQ_WHO_OWNS(*objects.get(&b),b));
+				t.send(OB_REMOTE_OBJECT_OP(*objects.get(&b),b,REMOTE_WHO_OWNS));
 			},
 
 
-			OB_RQ_OWN(a,b) => {
+			REMOTE_OWN(rmode) => {
 				// b must be in objects as per the same reasoning as 
 				// OB_RQ_ADD_REF() is sound.
 
@@ -175,33 +269,29 @@ impl ObjectBroker {
 				// owning the object, but has not received it yet?
 
 				let t = threads.get(&owner);
-				t.send(OB_RQ_OWN(a, b));
+				t.send(OB_REMOTE_OBJECT_OP(a, b, REMOTE_OWN(rmode)));
+
+				// from now on, shelve any further requests pertaining
+				// to this object until the new owner has taken over.
+				shelf.insert(b, ~[]);
 			},
 
 
-			OB_RQ_DISOWN(a,b,obj,receiver) => {
+			REMOTE_DISOWN(obj,receiver) => {
 				// must own object to be able to disown it
 				assert!(*objects.get(&b) == a);
 
 				*objects.get_mut(&b) = receiver;
 				let t = threads.get(&receiver);
-				t.send(OB_RQ_DISOWN(a, b, obj, receiver));
-			},
+				t.send(OB_REMOTE_OBJECT_OP(a, b, REMOTE_DISOWN(obj, receiver )));
 
-
-			OB_REGISTER(a, chan) => {
-				assert!(!threads.contains_key(&a));
-				threads.insert(a, chan);
-				debug!("object broker registered with thread {}", a);
-			},
-
-
-			OB_SHUTDOWN => {
-				debug!("object broker shutting down");
-				return false;
+				// cleanup shelf, sending the messages all in the right order
+				let mut sh = shelf.pop(&b).unwrap();
+				while sh.len() > 0 {
+					t.send(sh.shift());
+				}
 			},
 		}
-		return true;
 	}
 }
 
@@ -256,12 +346,15 @@ mod tests {
 		test_setup(
 			proc(input : SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
 				// register object 15
-				input.send(OB_RQ_ADD_REF(1,15));
+				input.send(OB_REMOTE_OBJECT_OP(1,15,REMOTE_ADD_REF));
 				sync_chan.send(1);
 
 				let request = output.recv();
 				match request {
-					OB_RQ_OWN(2,15) => input.send(OB_RQ_DISOWN(1,15,~JavaObject::new(*v,0),2)),
+					OB_REMOTE_OBJECT_OP(2,15,REMOTE_OWN (mode) ) => {
+						assert_eq!(mode, OBJECT_ACCESS_Normal);
+						input.send(OB_REMOTE_OBJECT_OP(1,15,REMOTE_DISOWN(~JavaObject::new(*v,0),2)))
+					},
 					_ => assert!(false),
 				}
 			},
@@ -272,11 +365,11 @@ mod tests {
 				sync_port.recv();
 
 				// want to own object 15
-				input.send(OB_RQ_OWN(2,15));
+				input.send(OB_REMOTE_OBJECT_OP(2,15,REMOTE_OWN(OBJECT_ACCESS_Normal) ));
 
 				let response = output.recv();
 				match response {
-					OB_RQ_DISOWN(1,15,val,2) => {
+					OB_REMOTE_OBJECT_OP(1,15,REMOTE_DISOWN(val,2)) => {
 						let cl = val.get_class();
 						assert_eq!(*cl.get().get_name(), ~"EmptyClass");
 						input.send(OB_SHUTDOWN);

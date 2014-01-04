@@ -87,7 +87,9 @@ impl LocalHeap  {
 
 		// tell the object broker to ensure other threads
 		// can request the object by its oid
-		self.get_thread_mut().send_message(OB_RQ_ADD_REF(self.tid, id));
+		let op = OB_REMOTE_OBJECT_OP(self.tid, id,REMOTE_ADD_REF);
+
+		self.get_thread_mut().send_message(op);
 		self.owned_objects.insert(id, ~JavaObject::new(jclass, id));
 		id
 	}
@@ -114,7 +116,8 @@ impl LocalHeap  {
 			None => () 
 		}
 		// forward request to ObjectBroker for remote objects
-		self.get_thread().send_message(OB_RQ_ADD_REF(self.tid, oid));
+		let op = OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_ADD_REF);
+		self.get_thread().send_message(op);
 	}
 
 
@@ -125,7 +128,8 @@ impl LocalHeap  {
 	pub fn release(&mut self, oid : JavaObjectId) {
 		// forward request to ObjectBroker for remote objects
 		if !self.owned_objects.contains_key(&oid) {
-			self.get_thread().send_message(OB_RQ_RELEASE(self.tid, oid));
+			let op = OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_RELEASE);
+			self.get_thread().send_message(op);
 			return;
 		}
 
@@ -148,9 +152,24 @@ impl LocalHeap  {
 	// is owned by the current thread, access is immediately
 	// granted, otherwise the current task blocks until 
 	// ownership can be obtained.
-	pub fn access_object(&mut self, oid : JavaObjectId, wrap : |&JavaObject| -> ()) {
+	//
+	// The `access` parameter specifies the kind of access requested on 
+	// the object. Note that OBJECT_ACCESS_NORMAL is always granted unless
+	// the thread who currently owns that object is deadlocked and any
+	// of the MONITOR_ access modes can be a cause of deadlock.
+	//
+	// TODO: how do we deal with deadlocks in general?
+	//
+	// The closure passed in is called exactly once with a borrowed ref to
+	// the object, to which it gets full access but cannot dispose of
+	pub fn access_object(&mut self, access : RequestObjectAccessType, 
+		oid : JavaObjectId, wrap : |&JavaObject| -> ()) 
+	{
 		match self.owned_objects.find(&oid) {
 			Some(ref mut obj) => {
+
+				// TODO: implement access modes
+
 				wrap(**obj);
 						
 				// check if we have any pending requests for this object,
@@ -167,22 +186,29 @@ impl LocalHeap  {
 			None => () 
 		}
 
-		self.get_thread().send_message(OB_RQ_OWN(self.tid, oid));
+		self.get_thread().send_message(OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_OWN(access) ));
 		self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| -> bool {
 			match *msg {
-				OB_RQ_DISOWN(ref rtid, ref roid, ref obj, ref rec) => {
+				OB_REMOTE_OBJECT_OP(ref rtid, ref roid, REMOTE_DISOWN(ref obj, ref rec)) => {
 					// when waiting for objects, we always block on
 					// obtaining them so it is not possible that 
 					// multiple requests are sent and responses
 					// received in a different order.
 					assert_eq!(*rec, self.tid);
+
+					// also verify that the access mode requirement is fullfilled
+					/*
+					assert!(access != OBJECT_ACCESS_Monitor || 
+						    access != OBJECT_ACCESS_MonitorPriority || 
+						    obj.monitor().can_enter(self.tid)
+					); */
 					true
 				},
 				_ => false
 			}
 		});
 
-		self.access_object(oid, wrap)
+		self.access_object(access, oid, wrap)
 	}
 
 
@@ -190,27 +216,38 @@ impl LocalHeap  {
 	// Transfer ownership of an object to a particular thread
 	pub fn send_to_thread(&mut self, oid : JavaObjectId, tid : uint) {
 		let obj = self.owned_objects.pop(&oid).unwrap();
-		let m = OB_RQ_DISOWN(self.tid, oid, obj, tid);
+		let m = OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_DISOWN(obj, tid));
 		self.get_thread().send_message(m);
 	}
 
 
 	// ----------------------------------------------
-	// Handle any of the OB_RQ messages
-	pub fn handle_message(&mut self, o : ObjectBrokerMessage) {
-		match o {
-			OB_RQ_ADD_REF(a,b) => self.add_ref(b),
-			OB_RQ_RELEASE(a,b) => self.release(b),
-			OB_RQ_OWN(a,b) => self.send_to_thread(b, a),
+	// Check if a particular object is currently owned by this thread
+	pub fn owns(&self, b : JavaObjectId) -> bool {
+		return self.owned_objects.contains_key(&b);
+	}
+
+
+	// ----------------------------------------------
+	// Handle any of the remote object messages 
+	// a is the source thread id, and b is the object in question.
+	pub fn handle_message(&mut self, a : uint, b : JavaObjectId, op : RemoteObjectOpMessage) {
+		assert!(self.owns(b));
+		match op {
+			REMOTE_WHO_OWNS => fail!("logic error, WHO_OWNS is not handled by threads"),
+			REMOTE_ADD_REF => self.add_ref(b),
+			REMOTE_RELEASE => self.release(b),
+			REMOTE_OWN(mode) => {
+				// TODO: handle request modes and monitor access
+				self.send_to_thread(b, a);
+			},
 			
-			OB_RQ_DISOWN(a,b,obj,rec) => {
+			REMOTE_DISOWN(obj,rec) => {
 				// currently we should not be receiving objects that we
 				// did not request using OB_RQ_OWN
 				assert_eq!(rec, self.tid);
 				self.owned_objects.insert(b, obj);
 			},
-
-			_ => fail!("logic error, message unexpected"),
 		}
 	}
 }

@@ -172,9 +172,13 @@ impl ThreadContext {
 			// those are not supported in this messaging direction
 			// (i.e. they are only _sent_ to ObjectBroker)
 			OB_REGISTER(a,b) => fail!("REGISTER message not expected here"),
-			OB_RQ_WHO_OWNS(a,b) => fail!("WHO_OWNS message not expected here"),
 
-			message => self.heap.handle_message(message)
+			OB_SHUTDOWN => fail!("todo"),
+			
+			// TODO: handle thread interrupt
+
+			OB_REMOTE_OBJECT_OP(a,b,op) => 
+				self.heap.handle_message(a,b,op),
 		}
 	}
 
