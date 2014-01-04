@@ -23,25 +23,30 @@ pub enum RequestObjectAccessType {
 	// access.
 	OBJECT_ACCESS_Normal,
 
-	// Request to also own the object's monitor, thus enforcing
+	// Request to also lock the object's monitor, thus enforcing
 	// mutual exclusion with other threads who also go through
 	// the monitor for accessing the object.
 	//
-	// Note that this does *not* actually enter the monitor,
+	// Note that this does *not* actually lock() the monitor,
 	// it only ensures that the object's monitor is not currently
-	// acquired by somebody else.
+	// lock by somebody else by the time the requesting thread
+	// receives object ownership.
 	OBJECT_ACCESS_Monitor,
 
-	// Request to also own the object's monitor, and to be given
+	// Request to also lock the object's monitor, and to be given
 	// preference over threads attempting to access with the
 	// OBJECT_ACCESS_Monitor flag. This is used in response to
 	// a wait() call on a monitor to make sure that such threads
 	// are given preference over threads accessing a monitor from
 	// outside.
+	//
+	// This also does *not* lock() the monitor.
 	OBJECT_ACCESS_MonitorPriority,
 }
 
 
+// OB_REMOTE_OBJECT_OP() detail messages, enumerating all supported
+// operations on remote (i.e. owned by other thread) objects.
 pub enum RemoteObjectOpMessage {
 
 	// request from thread a to addref object b. If the object 
@@ -73,14 +78,13 @@ pub enum RemoteObjectOpMessage {
 }
 
 
-
+// Top-level ObjectBroker message type
 pub enum ObjectBrokerMessage {
 	// ## Object management ##
 	OB_REMOTE_OBJECT_OP(uint, JavaObjectId, RemoteObjectOpMessage),
 
 
 	// ## Thread management ##
-
 	// a new thread a registers with the object broker
 	OB_REGISTER(uint, Chan<ObjectBrokerMessage>),
 
@@ -106,7 +110,7 @@ pub enum ObjectBrokerMessage {
 // When a thread dies, it forwards all of its alive objects to the 
 // object broker using a OB_RQ_DISOWN message. The broker, in turn, 
 // keeps those objects internally until another thread demands to
-// own them. TODO
+// own them. 
 pub struct ObjectBroker {
 	priv objects_with_owners: HashMap<JavaObjectId, uint>,
 

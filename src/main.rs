@@ -16,6 +16,7 @@ mod class;
 mod classpath;
 mod classloader;
 mod code;
+mod monitor;
 mod object;
 mod objectbroker;
 mod localheap;
