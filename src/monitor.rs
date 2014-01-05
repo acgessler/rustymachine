@@ -204,6 +204,16 @@ impl JavaMonitor {
 	}
 
 
+	// ----------------------------------------------
+	// Check if the monitor can currently be loked by the given
+	// thread. Since lock() is recursively usable, this also
+	// returns true if the thread already locks the mutex.
+	#[inline]
+	pub fn can_be_locked_by_thread(&self, tid : uint) -> bool {
+		self.lock_count == 0 || self.owner.unwrap() == tid
+	}
+
+
 
 	// ----------------------------------------------
 	#[inline]

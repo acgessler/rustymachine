@@ -168,18 +168,34 @@ impl LocalHeap  {
 		match self.owned_objects.find(&oid) {
 			Some(ref mut obj) => {
 
-				// TODO: implement access modes
+				let mut done = true;
+				match access {
+					OBJECT_ACCESS_Normal => {
+						wrap(**obj);
+					},
 
-				wrap(**obj);
-						
+					OBJECT_ACCESS_Monitor | OBJECT_ACCESS_MonitorPriority 
+						if obj.monitor().can_be_locked_by_thread(self.tid) => {
+							wrap(**obj);
+					},
+
+					_ => {
+						done = false;
+					}
+				}
+				/*
 				// check if we have any pending requests for this object,
-				// if so, satisfy them immediately 
-			/*	match obj.pop_waiting_thread() {
+				// if so, satisfy them immediately. If we did this in
+				// handle_pending_messages() [which might make more sense
+				// in terms of code hygiene], we would need a shortlist 
+				// of available objects.
+				if done {
+				match obj.pop_waiting_thread() {
 					None => (),
 					Some(tid) => {
 						self.send_to_thread(obj, tid);
 					}
-				} */
+				} } */
 				return
 			},
 			// fallthru
@@ -197,11 +213,10 @@ impl LocalHeap  {
 					assert_eq!(*rec, self.tid);
 
 					// also verify that the access mode requirement is fullfilled
-					/*
 					assert!(access != OBJECT_ACCESS_Monitor || 
 						    access != OBJECT_ACCESS_MonitorPriority || 
-						    obj.monitor().can_enter(self.tid)
-					); */
+						    obj.monitor().can_be_locked_by_thread(self.tid)
+					); 
 					true
 				},
 				_ => false
