@@ -1,4 +1,5 @@
 
+use objectbroker::*;
 use vm::{ThreadContext};
 use localheap::{LocalHeap};
 
@@ -155,20 +156,20 @@ impl JavaMonitor {
 
 
 	// ----------------------------------------------
-	// Locks the monitor. Blocks if the monitor can not
-	// currently be locked.
+	// Locks the monitor. Fails if the monitor cannot currently
+	// be entered as another thread has it already locked.
+	// To block on a monitor until availability, use 
+	// LocalHeap::access_object with ACCESS_OBJECT_Monitor
 	//
 	// Once a monitor has been entered by a thread, the monitor is
 	// said to be "locked" by that thread.
 	//
 	// Recursive calls to lock()/unlock() are supported.
 	#[inline]
-	pub fn lock(&mut self, thread : &mut ThreadContext) {
+	pub fn lock(&mut self, thread : &ThreadContext) {
 		let tid = thread.get_tid();
-		if self.is_locked() {
-			if tid != self.owner.unwrap() {
-				// block
-			} 
+		if !self.is_locked_by_thread(tid){
+			fail!("cannot lock object");
 		}
 		self.inc_lock();
 		self.owner = Some(tid);
@@ -189,7 +190,7 @@ impl JavaMonitor {
 	// ----------------------------------------------
 	// Check if the monitor is currently locked by the given thread
 	#[inline]
-	pub fn is_locked_by_thread(&mut self, tid : uint) -> bool {
+	pub fn is_locked_by_thread(&self, tid : uint) -> bool {
 		return self.lock_count > 0 && self.owner.unwrap() == tid;
 	}
 
@@ -197,7 +198,7 @@ impl JavaMonitor {
 	// ----------------------------------------------
 	// Check if the monitor is currently locked by any thread.
 	#[inline]
-	pub fn is_locked(&mut self) -> bool {
+	pub fn is_locked(&self) -> bool {
 		assert_eq!(self.lock_count > 0, self.owner.is_some());
 		self.lock_count > 0
 	}

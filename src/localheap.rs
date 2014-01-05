@@ -148,10 +148,10 @@ impl LocalHeap  {
 
 
 	// ----------------------------------------------
-	// Access a specific object. If the object requested
-	// is owned by the current thread, access is immediately
-	// granted, otherwise the current task blocks until 
-	// ownership can be obtained.
+	// Access a specific object. If the object requested is owned (or 
+	// locked, depending on the access mode requested) by the current 
+	// thread, access is immediately granted, otherwise the current 
+	// task blocks until ownership can be obtained.
 	//
 	// The `access` parameter specifies the kind of access requested on 
 	// the object. Note that OBJECT_ACCESS_NORMAL is always granted unless

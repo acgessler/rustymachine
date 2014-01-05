@@ -1,6 +1,7 @@
 
 use std::ops::{Index};
 use class::{JavaClassRef};
+use monitor::{JavaMonitor};
 
 // Type used for referencing objects. A 64 bit integer is used
 // to ensure that we never run out of ids.
@@ -22,12 +23,15 @@ pub struct JavaObject {
 	priv fields : ~[u32],
 
 	// List of threads (by their uint id) currently waiting
-	// to acquire the object. This list is part of the object
+	// to own the object. This list is part of the object
 	// itself and transferred between threads.
 	//
-	// This list is a superset of the object's monitor's list
+	// This list is independent of the object's monitor's list
 	// of threads that are currently blocking on the monitor.
 	priv waiters : ~[uint],
+
+	// The monitor object that guards synchronized object access
+	priv monitor : JavaMonitor,
 }
 
 
@@ -51,6 +55,7 @@ impl JavaObject {
 			jclass : jclass,
 			fields : ~[],
 			waiters : ~[],
+			monitor : JavaMonitor::new()
 		}
 		// TODO: field initialization
 	}
@@ -86,6 +91,18 @@ impl JavaObject {
 		assert!(self.ref_count >= 1);
 		self.ref_count -= 1;
 		self.ref_count != 0
+	}
+
+	// ----------------------------------------------
+	// Access the monitor of the object
+	#[inline]
+	pub fn monitor<'t>(&'t self) -> &'t JavaMonitor {
+		&self.monitor
+	}
+
+	#[inline]
+	pub fn monitor_mut<'t>(&'t mut self) -> &'t mut JavaMonitor {
+		&mut self.monitor
 	}
 }
 
