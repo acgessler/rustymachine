@@ -198,17 +198,36 @@ impl ObjectBroker {
 	// ----------------------------------------------
 	fn handle_object_op(&mut self, a : uint, b : JavaObjectId, op : RemoteObjectOpMessage)
 	{	
-		let ref mut objects = self.objects_with_owners;
-		let ref mut threads = self.out_chan;
-		let ref mut shelf = self.waiting_shelf;
-
 		// check if the object in question is currently being transferred
 		// between threads and any further requests are therefore shelved
 		// until a new owner is in place
 		match op {
-			REMOTE_DISOWN(ref obj,ref receiver) => (),
+			REMOTE_WHO_OWNS => (),
+			REMOTE_DISOWN(obj,receiver) => { 
+				{	let ref mut objects = self.objects_with_owners;
+					let ref mut threads = self.out_chan;
+
+					// must own object to be able to disown it
+					assert!(*objects.get(&b) == a);
+
+					*objects.get_mut(&b) = receiver;
+					let t = threads.get(&receiver);
+					t.send(OB_REMOTE_OBJECT_OP(a, b, REMOTE_DISOWN(obj, receiver )));
+				}
+
+				// cleanup shelf, sending the messages all in the right order,
+				// but not more than one OWN message
+				let mut sh = self.waiting_shelf.pop(&b).unwrap();
+				while sh.len() > 0 {
+					match sh.shift() {
+						OB_REMOTE_OBJECT_OP(a, b, op) => self.handle_object_op(a, b, op),
+						_ => fail!("logic error, cannot shelve this message"),
+					}
+				}
+				return;
+			},
 			_ => {
-				match shelf.find_mut(&b) {
+				match self.waiting_shelf.find_mut(&b) {
 					Some(ref v) => {
 						v.push( OB_REMOTE_OBJECT_OP(a,b,op) );
 						return;
@@ -217,6 +236,9 @@ impl ObjectBroker {
 				}
 			}
 		}
+
+		let ref mut objects = self.objects_with_owners;
+		let ref mut threads = self.out_chan;
 
 		match op {
 			REMOTE_ADD_REF => {		
@@ -277,24 +299,10 @@ impl ObjectBroker {
 
 				// from now on, shelve any further requests pertaining
 				// to this object until the new owner has taken over.
-				shelf.insert(b, ~[]);
+				self.waiting_shelf.insert(b, ~[]);
 			},
 
-
-			REMOTE_DISOWN(obj,receiver) => {
-				// must own object to be able to disown it
-				assert!(*objects.get(&b) == a);
-
-				*objects.get_mut(&b) = receiver;
-				let t = threads.get(&receiver);
-				t.send(OB_REMOTE_OBJECT_OP(a, b, REMOTE_DISOWN(obj, receiver )));
-
-				// cleanup shelf, sending the messages all in the right order
-				let mut sh = shelf.pop(&b).unwrap();
-				while sh.len() > 0 {
-					t.send(sh.shift());
-				}
-			},
+			REMOTE_DISOWN(obj,receiver) => fail!("logic error, handled earlier"),
 		}
 	}
 }
