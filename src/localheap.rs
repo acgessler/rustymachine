@@ -64,10 +64,12 @@ impl LocalHeap  {
 
 
 	// ----------------------------------------------
+	#[inline]
 	fn get_thread<'t>(&'t self) -> &'t ThreadContext {
 		unsafe { &*self.thread }
 	}
 
+	#[inline]
 	fn get_thread_mut<'t>(&'t self) -> &'t mut ThreadContext {
 		unsafe { &mut *self.thread }
 	}
@@ -211,7 +213,11 @@ impl LocalHeap  {
 			return;
 		} 
 
-		self.get_thread().send_message(OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_OWN(access) ));
+		// request to own the object
+		let op = OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_OWN(access));
+		self.get_thread().send_message(op);
+
+		// and block until we can get it
 		self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| -> bool {
 			match *msg {
 				OB_REMOTE_OBJECT_OP(ref rtid, ref roid, REMOTE_DISOWN(ref obj, ref rec)) => {
@@ -256,13 +262,35 @@ impl LocalHeap  {
 	// Handle any of the remote object messages 
 	// a is the source thread id, and b is the object in question.
 	pub fn handle_message(&mut self, a : uint, b : JavaObjectId, op : RemoteObjectOpMessage) {
+		// TODO: owns() is not necessarily satisfied if we send back objects without being asked for
 		assert!(self.owns(b));
 		match op {
 			REMOTE_WHO_OWNS => fail!("logic error, WHO_OWNS is not handled by threads"),
 			REMOTE_ADD_REF => self.add_ref(b),
 			REMOTE_RELEASE => self.release(b),
 			REMOTE_OWN(mode) => {
-				// TODO: handle request modes and monitor access
+				match mode {
+					OBJECT_ACCESS_Monitor | OBJECT_ACCESS_MonitorPriority => {
+						let obj = self.owned_objects.get_mut(&b);
+
+						// we should assume that, in order to request Priority access,
+						// the sender thread should already own the monitor as is
+						// the requirement for calling wait() on an object.
+						assert!(mode != OBJECT_ACCESS_MonitorPriority || 
+							obj.monitor().is_locked_by_thread(a));
+
+						if !obj.monitor().can_be_locked_by_thread(a) {
+							// append the thread to the monitor's waiting queues
+							obj.monitor_mut().push_thread(a, 
+								mode == OBJECT_ACCESS_MonitorPriority
+							);
+
+							return;
+						}
+					},
+					// fallthru
+					_ => (),
+				}
 				self.send_to_thread(b, a);
 			},
 			

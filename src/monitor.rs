@@ -3,11 +3,12 @@ use objectbroker::*;
 use vm::{ThreadContext};
 use localheap::{LocalHeap};
 
+
 // Implementation of a basic Java monitor object. Monitors as
 // mandated by Java generally have weaker properties than the 
 // original theoretical concept by C.A.R Hoare and Hansen.
 // 
-// Differences include:
+// Differences between Java and the theory include:
 //
 // - There is only one, implicit condition variable - 
 //   the monitor itself. This can be worked around by using
@@ -28,8 +29,12 @@ use localheap::{LocalHeap};
 // Note that, given spurious wakeups, notify() could essentially
 // be implemented through notifyAll().
 //
-// **** THIS IMPLEMENTATION ****
+
+
+
+// **** IMPLEMENTATION NOTES ****
 //
+// i)
 // We implement the original monitor concept since it is (to my
 // understanding) a strict subset of Java's monitor semantics.
 //
@@ -38,12 +43,22 @@ use localheap::{LocalHeap};
 // in which threads get to access a monitor.
 
 
-//
-//
+// ii)
 // In the context of this VM's terminology, care must be taken to 
 // disambiguate between owning objects (which is required even for
 // plain access to fields) and owning the monitor for an object 
 // which guarantees atomicity across multiple operations.
+
+
+// iii)
+// The monitor itself has only non-blocking APIs, to actually
+// block until a monitor can be locked again is left to the 
+// thread implementation.
+//
+
+// iv)
+// There are no spurious wakeups (at the time being)
+
 
 pub struct JavaMonitor {
 
@@ -95,6 +110,9 @@ impl JavaMonitor {
 
 
 	// ----------------------------------------------
+	// Check if there is a thread waiting to lock the monitor
+	// that is ready to do so (i.e. it has been notified or
+	// it comes from outside) and return it.
 	pub fn pop_ready_thread(&mut self) -> Option<uint> {
 		// no shelved thread can run if the monitor is locked
 		if self.is_locked() {
@@ -118,21 +136,48 @@ impl JavaMonitor {
 
 
 	// ----------------------------------------------
-	// Wait and unlock until another thread calls notify_{one,all} 
-	// and atomically lock the mutex again.
+	// Add a thread to the list of threads wishing to lock
+	// the monitor. The thread is identified by its tid.
+	// The `is_notify` parameter specifies whether the thread
+	// needs to be notified using notify_{all,one} before it 
+	// can run again. This is only allowed if the thread already
+	// holds the lock on the monitor.
+	pub fn push_thread(&mut self, tid : uint, is_notify : bool) {
+		if is_notify {
+			// assure we hold the monitor
+			assert!(self.is_locked_by_thread(tid));
+			self.waiters_prio.push((false,tid,self.lock_count));
+			return;
+		}
+
+		self.waiters.push(tid);
+	}
+
+
+	// ----------------------------------------------
+	// Perform all operation typically associated with a wait()
+	// operation on a monitor, but do not block. The caller is 
+	// responsible for blocking until the monitor is available
+	// again.
+	//
+	// The semantics of a wait() operation is that the current
+	// thread is added to the monitor's priority waiting queue,
+	// but set to a non-notified state. The monitor is then 
+	// unlocked. For the thread to resume, another thread must
+	// lock the monitor, call one of the notify_{one, all} APIs
+	// and unlock the monitor again.
 	//
 	// The monitor must be locked by the current thread.
 	#[inline]
-	pub fn wait(&mut self, thread : &mut ThreadContext) {
+	pub fn wait_noblock(&mut self, thread : &mut ThreadContext) {
 		// assure we hold the monitor
 		assert!(self.is_locked_by_thread(thread.get_tid()));
 		let tid = thread.get_tid();
 
 		// append the given thread to the end of the list, i.e.
 		// this thread gets served last.
-		self.waiters_prio.push((false,tid, self.lock_count));
-
-		// TODO: how to actually block now?
+		self.push_thread(tid, true);
+		self.lock_count = 0;
 	} 
 
 
