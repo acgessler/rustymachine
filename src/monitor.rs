@@ -95,6 +95,33 @@ impl JavaMonitor {
 
 
 	// ----------------------------------------------
+	pub fn pop_ready_thread(&mut self) -> Option<uint> {
+		// no shelved thread can run if the monitor is locked
+		if self.is_locked() {
+			return None;
+		}
+
+		// check if there is any wait()ing thread that has been
+		// notify()ed and is therefore ready to run again.
+		if self.waiters_prio.len() > 0 {
+			let (notified, tid, lock_count) = self.waiters_prio[0];
+			if notified {
+				self.waiters_prio.shift();
+				return Some(tid);
+			}
+		}
+
+		// otherwise just pick any thread who is waiting to
+		// lock the mutex.
+		self.waiters.shift_opt()
+	}
+
+
+	// ----------------------------------------------
+	// Wait and unlock until another thread calls notify_{one,all} 
+	// and atomically lock the mutex again.
+	//
+	// The monitor must be locked by the current thread.
 	#[inline]
 	pub fn wait(&mut self, thread : &mut ThreadContext) {
 		// assure we hold the monitor
@@ -113,6 +140,8 @@ impl JavaMonitor {
 	// Notify one wait()ing thread, if any. The corresponding
 	// thread is unblocked and resumes operation. It automatically
 	// locks the mutex again.
+	//
+	// The monitor must be locked by the current thread.
 	pub fn notify_one(&mut self, thread : &ThreadContext) {
 		// assure we hold the monitor
 		assert!(self.is_locked_by_thread(thread.get_tid()));
@@ -137,6 +166,8 @@ impl JavaMonitor {
 	// ----------------------------------------------
 	// Unlike notify_one(), this marks all wait()ing threads as
 	// ready to run again.
+	//
+	// The monitor must be locked by the current thread.
 	pub fn notify_all(&mut self, thread : &ThreadContext) {
 		// assure we hold the monitor
 		assert!(self.is_locked_by_thread(thread.get_tid()));

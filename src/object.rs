@@ -22,14 +22,6 @@ pub struct JavaObject {
 	priv jclass : JavaClassRef,
 	priv fields : ~[u32],
 
-	// List of threads (by their uint id) currently waiting
-	// to own the object. This list is part of the object
-	// itself and transferred between threads.
-	//
-	// This list is independent of the object's monitor's list
-	// of threads that are currently blocking on the monitor.
-	priv waiters : ~[uint],
-
 	// The monitor object that guards synchronized object access
 	priv monitor : JavaMonitor,
 }
@@ -54,7 +46,6 @@ impl JavaObject {
 			ref_count : 1,
 			jclass : jclass,
 			fields : ~[],
-			waiters : ~[],
 			monitor : JavaMonitor::new()
 		}
 		// TODO: field initialization

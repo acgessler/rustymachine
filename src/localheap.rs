@@ -165,42 +165,51 @@ impl LocalHeap  {
 	pub fn access_object(&mut self, access : RequestObjectAccessType, 
 		oid : JavaObjectId, wrap : |&JavaObject| -> ()) 
 	{
-		match self.owned_objects.find(&oid) {
-			Some(ref mut obj) => {
+		let mut done = false;
+		let mut send_to_thread : Option<uint> = None;
+		match self.owned_objects.find_mut(&oid) {
+			Some(ref obj) => {
 
-				let mut done = true;
 				match access {
+
 					OBJECT_ACCESS_Normal => {
 						wrap(**obj);
+						done = true;
 					},
-
 					OBJECT_ACCESS_Monitor | OBJECT_ACCESS_MonitorPriority 
+						// even if we own the object, somebody else could
+						// have the monitor lock.
 						if obj.monitor().can_be_locked_by_thread(self.tid) => {
 							wrap(**obj);
+							done = true;
 					},
 
-					_ => {
-						done = false;
-					}
+					// fallthru
+					_ => ()
 				}
-				/*
-				// check if we have any pending requests for this object,
-				// if so, satisfy them immediately. If we did this in
-				// handle_pending_messages() [which might make more sense
-				// in terms of code hygiene], we would need a shortlist 
-				// of available objects.
+
 				if done {
-				match obj.pop_waiting_thread() {
-					None => (),
-					Some(tid) => {
-						self.send_to_thread(obj, tid);
-					}
-				} } */
-				return
+					send_to_thread = obj.monitor_mut().pop_ready_thread();
+				}
 			},
 			// fallthru
 			None => () 
 		}
+
+		// check if we have any pending waiters for the object's monitor,
+		// if so, satisfy them immediately. If we did this in
+		// handle_pending_messages() [which might make more sense
+		// in terms of code hygiene], we would need to maintain shortlist 
+		// of available objects.
+		if done {
+			match send_to_thread {
+				None => (),
+				Some(tid) => {
+					self.send_to_thread(oid, tid);
+				}
+			} 
+			return;
+		} 
 
 		self.get_thread().send_message(OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_OWN(access) ));
 		self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| -> bool {
