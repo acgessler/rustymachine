@@ -218,7 +218,7 @@ impl LocalHeap  {
 		self.get_thread().send_message(op);
 
 		// and block until we can get it
-		self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| -> bool {
+		if self.get_thread_mut().handle_messages_until(|msg : &ObjectBrokerMessage| {
 			match *msg {
 				OB_REMOTE_OBJECT_OP(ref rtid, ref roid, REMOTE_DISOWN(ref obj, ref rec)) => {
 					// when waiting for objects, we always block on
@@ -236,9 +236,9 @@ impl LocalHeap  {
 				},
 				_ => false
 			}
-		});
-
-		self.access_object(access, oid, wrap)
+		}) {
+			self.access_object(access, oid, wrap)
+		} // else: VM shutdown - we simply ignore the closure
 	}
 
 
@@ -248,6 +248,15 @@ impl LocalHeap  {
 		let obj = self.owned_objects.pop(&oid).unwrap();
 		let m = OB_REMOTE_OBJECT_OP(self.tid, oid, REMOTE_DISOWN(obj, tid));
 		self.get_thread().send_message(m);
+	}
+
+
+
+	// ----------------------------------------------
+	// Transfers ownership of the hashmap containing all owned
+	// objects to the caller and destroys the LocalHeap
+	pub fn unwrap_objects(self) -> HashMap<JavaObjectId,~JavaObject> {
+		self.owned_objects
 	}
 
 

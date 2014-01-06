@@ -78,6 +78,16 @@ pub enum RemoteObjectOpMessage {
 }
 
 
+pub enum RemoteThreadOpMessage {
+
+	THREAD_JOIN,
+	THREAD_NOTIFY_TERMINATION,
+	THREAD_SET_PRIORITY,
+}
+
+pub type ObjectSet = HashMap<JavaObjectId, ~JavaObject>;
+
+
 // Top-level ObjectBroker message type
 pub enum ObjectBrokerMessage {
 	// ## Object management ##
@@ -88,9 +98,23 @@ pub enum ObjectBrokerMessage {
 	// a new thread a registers with the object broker
 	OB_REGISTER(uint, Chan<ObjectBrokerMessage>),
 
+	// A thread unregisters itself from the object broker,
+	// which also abandons the corresponding channel.
+	// The message also transmits all remaining objects owned
+	// by this thread.
+	OB_UNREGISTER(uint, ObjectSet),
+
+
+	// ## Thread operations ##
+	OB_THREAD_REMOTE_OP(uint, uint, RemoteThreadOpMessage),
+
+
 
 	// ## VM management ##
-	OB_SHUTDOWN
+	// Thread sends this to broker in response to a System.exit(code)
+	// and broker sends this to all threads once it determines that
+	// the last non-daemon thread is dead.
+	OB_SHUTDOWN(uint, int)
 }
 
 
@@ -113,6 +137,7 @@ pub enum ObjectBrokerMessage {
 // own them. 
 pub struct ObjectBroker {
 	priv objects_with_owners: HashMap<JavaObjectId, uint>,
+	priv objects_owned : ObjectSet,
 
 	priv in_port : Port<ObjectBrokerMessage>,
 	priv out_chan : HashMap<uint, Chan<ObjectBrokerMessage>>,
@@ -129,6 +154,7 @@ pub struct ObjectBroker {
 	// TODO: how to guarantee object transfer if threads are blocking?
 }
 
+static NO_THREAD_INDEX : uint = 0;
 
 static OB_INITIAL_OBJ_HASHMAP_CAPACITY : uint = 4096;
 static OB_INITIAL_THREAD_CAPACITY : uint = 16;
@@ -142,6 +168,7 @@ impl ObjectBroker {
 	 	let (out,input) = SharedChan::new();
 		ObjectBroker {
 			objects_with_owners : HashMap::with_capacity(OB_INITIAL_OBJ_HASHMAP_CAPACITY),
+			objects_owned : HashMap::new(),
 
 			in_port : out,
 			in_shared_chan : input,
@@ -177,6 +204,10 @@ impl ObjectBroker {
 				self.handle_object_op(a, b, remote_op)
 			},
 
+			OB_THREAD_REMOTE_OP(a, b, remote_op) => {
+				// TODO
+			}
+
 
 			OB_REGISTER(a, chan) => {
 				let ref mut threads = self.out_chan;
@@ -186,8 +217,16 @@ impl ObjectBroker {
 			},
 
 
-			OB_SHUTDOWN => {
-				debug!("object broker shutting down");
+			OB_UNREGISTER(a, chan) => {
+				let ref mut threads = self.out_chan;
+				assert!(threads.contains_key(&a));
+				threads.pop(&a);
+				debug!("object broker unregistered with thread {}", a);
+			},
+
+
+			OB_SHUTDOWN(a, exit_code) => {
+				debug!("object broker shutting down with exit code {}",exit_code);
 				return false;
 			},
 		}
@@ -384,7 +423,7 @@ mod tests {
 					OB_REMOTE_OBJECT_OP(1,15,REMOTE_DISOWN(val,2)) => {
 						let cl = val.get_class();
 						assert_eq!(*cl.get().get_name(), ~"EmptyClass");
-						input.send(OB_SHUTDOWN);
+						input.send(OB_SHUTDOWN(1,-1));
 					},
 					_ => assert!(false),
 				}
