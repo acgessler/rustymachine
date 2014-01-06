@@ -20,6 +20,7 @@ mod monitor;
 mod object;
 mod objectbroker;
 mod localheap;
+mod thread;
 mod vm;
 
 

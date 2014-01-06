@@ -5,7 +5,7 @@ use std::unstable::atomics::{atomic_add, AcqRel};
 
 use std::ptr;
 
-use vm::{ThreadContext};
+use thread::{ThreadContext};
 use object::{JavaObject, JavaObjectId};
 use class::{JavaClassRef};
 use objectbroker::*;

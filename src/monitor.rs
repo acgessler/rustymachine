@@ -1,6 +1,6 @@
 
 use objectbroker::*;
-use vm::{ThreadContext};
+use thread::{ThreadContext};
 use localheap::{LocalHeap};
 
 
