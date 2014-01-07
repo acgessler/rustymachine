@@ -25,6 +25,8 @@
 
 use std::unstable::atomics::{atomic_add, AcqRel};
 
+use std::hashmap::{HashMap};
+
 use std::task::{task};
 
 use objectbroker::*;
@@ -180,8 +182,11 @@ impl ThreadContext {
 		// the ownership of the broker. Not if the VM itself
 		// is shut down, though (i.e. VM::exit() or System.exit()
 		// called from Java code). In this scenario, we do not
-		// transfer objects or unregister from the broker thread.
-		if !self.vm_was_shutdown {
+		// transfer objects.
+		if self.vm_was_shutdown {
+			self.broker_chan.send(OB_UNREGISTER(self.tid, HashMap::new()));
+		}
+		else {
 			let tid = self.tid;
 			let chan = self.broker_chan.clone();
 			let objects = self.heap.unwrap_objects();

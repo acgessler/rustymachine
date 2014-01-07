@@ -237,10 +237,16 @@ impl ObjectBroker {
 			},
 
 
-			OB_UNREGISTER(a, chan) => {
+			OB_UNREGISTER(a, objects) => {
 				let ref mut threads = self.out_chan;
 				assert!(threads.contains_key(&a));
 				threads.pop(&a);
+
+				// own all objects
+				for (a,b) in objects.move_iter() {
+					self.objects_owned.insert(a,b);
+				}
+
 				debug!("object broker unregistered with thread {}", a);
 			},
 
