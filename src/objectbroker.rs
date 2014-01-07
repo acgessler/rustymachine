@@ -27,6 +27,8 @@ use std::task::{task};
 
 use object::{JavaObject, JavaObjectId};
 
+use threadmanager::{ThreadManager, RemoteThreadOpMessage};
+
 
 
 // Enumerates all possible types of accessing objects.
@@ -98,12 +100,7 @@ pub enum RemoteObjectOpMessage {
 }
 
 
-pub enum RemoteThreadOpMessage {
 
-	THREAD_JOIN,
-	THREAD_NOTIFY_TERMINATION,
-	THREAD_SET_PRIORITY,
-}
 
 pub type ObjectSet = HashMap<JavaObjectId, ~JavaObject>;
 
@@ -156,6 +153,8 @@ pub enum ObjectBrokerMessage {
 // keeps those objects internally until another thread demands to
 // own them. 
 pub struct ObjectBroker {
+	priv threads : ThreadManager,
+
 	priv objects_with_owners: HashMap<JavaObjectId, uint>,
 	priv objects_owned : ObjectSet,
 
@@ -187,6 +186,7 @@ impl ObjectBroker {
 	{
 	 	let (out,input) = SharedChan::new();
 		ObjectBroker {
+			threads : ThreadManager::new(),
 			objects_with_owners : HashMap::with_capacity(OB_INITIAL_OBJ_HASHMAP_CAPACITY),
 			objects_owned : HashMap::new(),
 
@@ -225,7 +225,7 @@ impl ObjectBroker {
 			},
 
 			OB_THREAD_REMOTE_OP(a, b, remote_op) => {
-				// TODO
+				self.threads.process_message(a, b, remote_op)
 			}
 
 

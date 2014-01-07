@@ -39,6 +39,7 @@ mod classloader;
 mod code;
 mod monitor;
 mod object;
+mod threadmanager;
 mod objectbroker;
 mod localheap;
 mod thread;
