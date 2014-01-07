@@ -85,7 +85,7 @@ pub enum RemoteObjectOpMessage {
 	REMOTE_WHO_OWNS,
 
 	// thread a asks to take over ownership of object b with the
-	// given access type. When granted, a OB_RQ_DISOWN message
+	// given access type. When granted, a REMOTE_DISOWN message
 	// returns the object.
 	REMOTE_OWN(RequestObjectAccessType),
 
@@ -141,10 +141,10 @@ pub enum ObjectBrokerMessage {
 // The ObjectBroker handles ownership for concurrently accessed
 // objects. At every time, every object has one well-defined owner.
 // If a thread needs access to an object that it does not currently
-// own, it submits a OB_RQ_OWN message to the object broker, which
+// own, it submits a REMOTE_OWN message to the object broker, which
 // in turn asks the thread who owns the object to relinquish it using
-// a OB_RQ_DISOWN message. The owning thread gives up ownership and
-// sends a OB_RQ_DISOWN message to the broker, which forwards it to
+// a REMOTE_DISOWN message. The owning thread gives up ownership and
+// sends a REMOTE_DISOWN message to the broker, which forwards it to
 // the original thread and updates its book-keeping to reflect the
 // change in ownership.
 //
@@ -152,7 +152,7 @@ pub enum ObjectBrokerMessage {
 // thread ids.
 //
 // When a thread dies, it forwards all of its alive objects to the 
-// object broker using a OB_RQ_DISOWN message. The broker, in turn, 
+// object broker using a REMOTE_DISOWN message. The broker, in turn, 
 // keeps those objects internally until another thread demands to
 // own them. 
 pub struct ObjectBroker {
@@ -165,7 +165,7 @@ pub struct ObjectBroker {
 	// this is duplicated into all threads
 	priv in_shared_chan : SharedChan<ObjectBrokerMessage>,
 
-	// once an OB_RQ_OWN message has been sent to a thread,
+	// once an REMOTE_OWN message has been sent to a thread,
 	// all further requests to the same object are saved 
 	// up and dispatched to whomever gains new ownership
 	// of the objects. 
