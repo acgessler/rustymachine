@@ -365,6 +365,8 @@ impl ObjectBroker {
 
 				// if the broker owns this object, send it immediately
 				if owner == 0 {
+					*objects.get_mut(&b) = a;
+					
 					let op = REMOTE_DISOWN(self.objects_owned.pop().unwrap(), a);
 					let t = threads.get(&a);
 					t.send(OB_REMOTE_OBJECT_OP(0, b, op));
