@@ -20,16 +20,16 @@
 //
 
 use std::comm::{Chan, Port, SharedChan};
-
 use std::hashmap::{HashMap};
-
 use std::task::{task};
 
+use extra::comm::{DuplexStream};
+
+
+
 use object::{JavaObject, JavaObjectId};
-
 use threadmanager::{ThreadManager, RemoteThreadOpMessage};
-
-
+use vm;
 
 // Enumerates all possible types of accessing objects.
 // Threads wishing to acquire ownership of an object specify one of
@@ -126,9 +126,11 @@ pub enum ObjectBrokerMessage {
 	OB_THREAD_REMOTE_OP(uint, uint, RemoteThreadOpMessage),
 
 
-
 	// ## VM management ##
-	// Thread sends this to broker in response to a System.exit(code)
+	// Connection to VM 
+	OB_VM_TO_BROKER(vm::VMToBrokerControlMessage),
+
+	// A thread sends this to broker in response to a System.exit(code)
 	// and broker sends this to all threads once it determines that
 	// the last non-daemon thread is dead.
 	OB_SHUTDOWN(uint, int)
@@ -153,6 +155,9 @@ pub enum ObjectBrokerMessage {
 // keeps those objects internally until another thread demands to
 // own them. 
 pub struct ObjectBroker {
+	// back connection to VM
+	priv vm_chan : Chan< vm::BrokerToVMControlMessage>,
+
 	priv threads : ThreadManager,
 
 	priv objects_with_owners: HashMap<JavaObjectId, uint>,
@@ -179,20 +184,34 @@ static OB_INITIAL_OBJ_HASHMAP_CAPACITY : uint = 4096;
 static OB_INITIAL_THREAD_CAPACITY : uint = 16;
 static OB_INITIAL_WAITING_SHELF_CAPACITY : uint = 256;
 
+
+static EXIT_CODE_VM_INITIATED_SHUTDOWN : int = -150392;
+
+
 impl ObjectBroker {
 
 	// ----------------------------------------------
-	pub fn new() -> ObjectBroker
+	pub fn new(cstream : Chan< vm::BrokerToVMControlMessage>) -> ObjectBroker
 	{
 	 	let (out,input) = SharedChan::new();
 		ObjectBroker {
+			vm_chan : cstream,
 			threads : ThreadManager::new(),
+
+			// maps object-ids (oid) to their other thread-ids (tid) or to 0
+			// if the broker owns them (i.e. they are in objects_owned).
 			objects_with_owners : HashMap::with_capacity(OB_INITIAL_OBJ_HASHMAP_CAPACITY),
 			objects_owned : HashMap::new(),
 
+			//
 			in_port : out,
 			in_shared_chan : input,
+
+			// maps thread-id to the corresponding channels to send data to
 			out_chan : HashMap::with_capacity(OB_INITIAL_THREAD_CAPACITY),
+
+			// waiting queue for messages sent to objects that are currently
+			// being transferred between threads.
 			waiting_shelf : HashMap::with_capacity(OB_INITIAL_WAITING_SHELF_CAPACITY)
 		}
 	}
@@ -200,8 +219,7 @@ impl ObjectBroker {
 
 	// ----------------------------------------------
 	// Launches the object broker. Returns a SharedChan object that can be used
-	// to direct messages to the broker. Send an OB_SHUTDOWN to terminate
-	// operation.
+	// to direct messages to the broker. 
 	pub fn launch(mut self) -> SharedChan<ObjectBrokerMessage> {
 		let ret_chan = self.in_shared_chan.clone();
 
@@ -210,6 +228,7 @@ impl ObjectBroker {
 		do spawn {
 			let mut s = self; 
 			while s.handle_message() {}
+			// die once self goes out of scope 
 		}
 		return ret_chan;
 	}
@@ -226,10 +245,32 @@ impl ObjectBroker {
 
 			OB_THREAD_REMOTE_OP(a, b, remote_op) => {
 				self.threads.process_message(a, b, remote_op)
-			}
+			},
+
+
+			OB_VM_TO_BROKER(op) => {
+				match op {
+					vm::VM_TO_BROKER_DO_SHUTDOWN => 
+						self.shutdown_protocol(EXIT_CODE_VM_INITIATED_SHUTDOWN),
+
+					vm::VM_TO_BROKER_ACK_SHUTDOWN => {
+						// trigger self-destruction
+						return false;
+					}
+				}
+			},
+
+
+			OB_SHUTDOWN(a, exit_code) => {
+				self.shutdown_protocol(exit_code);
+			},
 
 
 			OB_REGISTER(a, chan) => {
+				// no thread may even register with the tid 0 as this
+				// is a reserved value.
+				assert!(a != 0);
+
 				let ref mut threads = self.out_chan;
 				assert!(!threads.contains_key(&a));
 				threads.insert(a, chan);
@@ -252,14 +293,18 @@ impl ObjectBroker {
 
 				debug!("object broker unregistered with thread {}", a);
 			},
-
-
-			OB_SHUTDOWN(a, exit_code) => {
-				debug!("object broker shutting down with exit code {}",exit_code);
-				return false;
-			},
 		}
 		return true;
+	}
+
+
+	// ----------------------------------------------
+	fn shutdown_protocol(&mut self, exit_code : int) {
+		debug!("object broker shutting down with exit code {}",exit_code);
+		
+		// TODO - actually shutdown threads
+
+		self.vm_chan.send(vm::BROKER_TO_VM_DID_SHUTDOWN(exit_code));
 	}
 
 
@@ -400,7 +445,8 @@ mod tests {
 	type test_proc = proc(SharedChan<ObjectBrokerMessage>, Port<ObjectBrokerMessage>) -> ();
 
 	fn test_setup(a : test_proc, b : test_proc) {
-		let mut ob = ObjectBroker::new();
+		let (port, chan) = Chan::new();
+		let mut ob = ObjectBroker::new(chan);
 		let chan = ob.launch();
 
 		// thread 1

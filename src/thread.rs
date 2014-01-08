@@ -179,19 +179,13 @@ impl ThreadContext {
 	// ----------------------------------------------
 	fn die(self) {
 		// this thread dies and transfers all of its object to
-		// the ownership of the broker. Not if the VM itself
-		// is shut down, though (i.e. VM::exit() or System.exit()
-		// called from Java code). In this scenario, we do not
-		// transfer objects.
-		if self.vm_was_shutdown {
-			self.broker_chan.send(OB_UNREGISTER(self.tid, HashMap::new()));
-		}
-		else {
-			let tid = self.tid;
-			let chan = self.broker_chan.clone();
-			let objects = self.heap.unwrap_objects();
-			chan.send(OB_UNREGISTER(tid, objects));
-		}
+		// the ownership of the broker. We do this _even_ in the
+		// scenario that the whole VM is shutdown to enable this
+		// process to be cancelled and operation to resume.
+		let tid = self.tid;
+		let chan = self.broker_chan.clone();
+		let objects = self.heap.unwrap_objects();
+		chan.send(OB_UNREGISTER(tid, objects));
 	}
 
 
@@ -203,6 +197,7 @@ impl ThreadContext {
 			// (i.e. they are only _sent_ to ObjectBroker)
 			OB_REGISTER(a,b) => fail!("REGISTER message not expected here"),
 			OB_UNREGISTER(a,b) => fail!("UNREGISTER message not expected here"),
+			OB_VM_TO_BROKER(op) => fail!("OP_VM_TO_BROKER message not expected here"),
 
 			OB_SHUTDOWN(a,b) => {
 				// Since handle_message is called with a borrowed ref and
