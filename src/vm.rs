@@ -66,9 +66,7 @@ pub enum BrokerToVMControlMessage {
 //   EXITED is the state in which the VM is placed if either
 //     - the last Java thread without the 'daemon' flag terminates
 //     - System.exit() is called
-//     - exit() is invoked on the VM instance.
-//
-//   Once EXITED is reached, the only supported operation is
+//     - exit() is invoked on the VM instance
 //
 
 
@@ -161,6 +159,8 @@ impl VM {
 	// This is a blocking API. It returns the exit code of the Java program,
 	// i.e. the value given to System.exit(), a 0 if all threads exited normally
 	// and an undefined negative value if a terminal exception caused the exit.
+	//
+	// exit() is idempotent.
 	pub fn exit(mut self) -> int {
 		self.intern_await_exit();
 		self.exit_code.unwrap()
