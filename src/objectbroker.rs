@@ -245,6 +245,7 @@ impl ObjectBroker {
 				// own all objects
 				for (a,b) in objects.move_iter() {
 					self.objects_owned.insert(a,b);
+					*self.objects.get_mut(a) = 0;
 				}
 
 				debug!("object broker unregistered with thread {}", a);
@@ -317,6 +318,9 @@ impl ObjectBroker {
 				// Therefore, whether the object is present in the HM
 				// is safe for determining whether it is new.
 				match objects.find(&b) {
+					Some(owner) if owner == 0 => {
+						self.objects_owned.get(&b).add_ref();
+					},
 					Some(owner) => {
 						let t = threads.get(owner);
 						t.send(OB_REMOTE_OBJECT_OP(a,b,REMOTE_ADD_REF));
@@ -332,6 +336,9 @@ impl ObjectBroker {
 				let owner = *objects.get(&b);
 				if owner == a {
 					objects.remove(&b);
+				}
+				else if owner == 0 {
+					self.objects_owned.get(&b).release();
 				}
 				else {
 					let t = threads.get(&owner);
@@ -356,8 +363,13 @@ impl ObjectBroker {
 				// so failure to hold this would be a logic error.
 				assert!(owner != a);
 
-				// TODO: what if somebody else concurrently requested
-				// owning the object, but has not received it yet?
+				// if the broker owns this object, send it immediately
+				if owner == 0 {
+					let op = REMOTE_DISOWN(self.objects_owned.pop().unwrap(), a);
+					let t = threads.get(&a);
+					t.send(OB_REMOTE_OBJECT_OP(0, b, op));
+					return;
+				}
 
 				let t = threads.get(&owner);
 				t.send(OB_REMOTE_OBJECT_OP(a, b, REMOTE_OWN(rmode)));
