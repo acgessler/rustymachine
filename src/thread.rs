@@ -23,7 +23,7 @@
 // Java bytecode and thereby represents one java.lang.Thread
 
 
-use std::unstable::atomics::{atomic_add, AcqRel};
+use std::sync::atomics::{atomic_add, AcqRel};
 
 use std::hashmap::{HashMap};
 

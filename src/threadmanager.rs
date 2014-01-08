@@ -44,7 +44,8 @@ pub enum RemoteThreadOpMessage {
 
 	THREAD_JOIN,
 	THREAD_NOTIFY_TERMINATION,
-	THREAD_SET_PRIORITY,
+	THREAD_SET_PRIORITY(int),
+	THREAD_SET_NAME(~str)
 }
 
 
@@ -80,6 +81,22 @@ pub struct ThreadManager {
 	// number of threads in `threads` with daemon=false,
 	// when this counter reaches 0, the VM shuts down
 	priv alive_nondaemon_count : uint,
+
+	priv state : ThreadManagerState,
+}
+
+
+pub enum ThreadManagerState {
+	// initial state when no thread has been added yet
+	TMS_NoThreadSeenYet,
+
+	// running state - at least one non-daemon thread
+	TMS_Running,
+
+	// all non-daemon threads have died. Transition from
+	// here to Running is possible by adding a new thread
+	// that is not a daemon.
+	TMS_AllNonDaemonsDead,
 }
 
 
@@ -87,19 +104,65 @@ impl ThreadManager {
 
 	// ----------------------------------------------
 	pub fn new() -> ThreadManager {
+		// always add the default thread group "0"
+		let mut groups : HashMap<uint, GlobThreadGroupInfo> = HashMap::new();
+		groups.insert(0, GlobThreadGroupInfo {
+			gid : 0,
+			parent_gid : None
+		});
+
 		ThreadManager{
-			groups : HashMap::new(),
+			groups : groups,
 			threads : HashMap::new(),
 
-			// TODO: make sure we don't die immediately
-			alive_nondaemon_count : 0
+			alive_nondaemon_count : 0,
+			state : TMS_NoThreadSeenYet,
 		}
+	}
+
+
+	// ----------------------------------------------
+	pub fn get_state(&self) -> ThreadManagerState {
+		self.state
+	}
+
+
+	// ----------------------------------------------
+	// Register a thread with the ThreadManager
+	pub fn add_thread(&mut self, tid : uint, gid : uint) {
+		self.threads.insert(tid, GlobThreadInfo {
+			tid : tid,
+			gid : gid,
+			name : ~"",
+			priority : 0,
+			daemon : false,
+		});
+
+		self.state = TMS_Running;
+	}
+
+
+	// ----------------------------------------------
+	// Unregister a thread from the ThreadManager
+	pub fn remove_thread(&mut self, tid : uint) {
+		let t = self.threads.pop(&tid).unwrap();
+		if t.daemon {
+			self.alive_nondaemon_count -= 1;
+		}
+		self.state = if self.alive_nondaemon_count == 0 { TMS_AllNonDaemonsDead } else { TMS_Running };
 	}
 
 
 	// ----------------------------------------------
 	pub fn process_message(&mut self, src_tid : uint, dest_tid : uint, 
 		op : RemoteThreadOpMessage)  {
+
+		match op {
+			THREAD_JOIN => (),
+			THREAD_NOTIFY_TERMINATION => fail!("THREAD_NOTIFY_TERMINATION unexpected"),
+			THREAD_SET_PRIORITY(prio) => (),
+			THREAD_SET_NAME(name) => (),
+		}
 	}
 }
 

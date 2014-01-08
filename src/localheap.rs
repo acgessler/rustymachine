@@ -22,7 +22,7 @@
 
 use std::hashmap::{HashMap};
 
-use std::unstable::atomics::{atomic_add, AcqRel};
+use std::sync::atomics::{atomic_add, AcqRel};
 
 use std::ptr;
 
