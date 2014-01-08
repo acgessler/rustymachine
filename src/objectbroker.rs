@@ -237,15 +237,17 @@ impl ObjectBroker {
 			},
 
 
-			OB_UNREGISTER(a, objects) => {
+			OB_UNREGISTER(a, in_objects) => {
 				let ref mut threads = self.out_chan;
+				let ref mut objects = self.objects_with_owners;
+
 				assert!(threads.contains_key(&a));
 				threads.pop(&a);
 
 				// own all objects
-				for (a,b) in objects.move_iter() {
+				for (a,b) in in_objects.move_iter() {
 					self.objects_owned.insert(a,b);
-					*self.objects.get_mut(a) = 0;
+					*objects.get_mut(&a) = 0;
 				}
 
 				debug!("object broker unregistered with thread {}", a);
@@ -318,8 +320,8 @@ impl ObjectBroker {
 				// Therefore, whether the object is present in the HM
 				// is safe for determining whether it is new.
 				match objects.find(&b) {
-					Some(owner) if owner == 0 => {
-						self.objects_owned.get(&b).add_ref();
+					Some(owner) if *owner == 0 => {
+						self.objects_owned.get_mut(&b).intern_add_ref();
 					},
 					Some(owner) => {
 						let t = threads.get(owner);
@@ -338,7 +340,7 @@ impl ObjectBroker {
 					objects.remove(&b);
 				}
 				else if owner == 0 {
-					self.objects_owned.get(&b).release();
+					self.objects_owned.get_mut(&b).intern_release();
 				}
 				else {
 					let t = threads.get(&owner);
@@ -366,8 +368,8 @@ impl ObjectBroker {
 				// if the broker owns this object, send it immediately
 				if owner == 0 {
 					*objects.get_mut(&b) = a;
-					
-					let op = REMOTE_DISOWN(self.objects_owned.pop().unwrap(), a);
+
+					let op = REMOTE_DISOWN(self.objects_owned.pop(&b).unwrap(), a);
 					let t = threads.get(&a);
 					t.send(OB_REMOTE_OBJECT_OP(0, b, op));
 					return;
