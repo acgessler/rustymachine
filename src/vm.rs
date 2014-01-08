@@ -63,12 +63,12 @@ pub enum BrokerToVMControlMessage {
 //   once and persists while at least one Java thread is running 
 //   without the 'daemon' flag.
 //
-//   EXITED is the state in which the VM is placed once the last
-//   Java thread without the 'daemon' flag terminates, or System.exit()
-//   is called.
+//   EXITED is the state in which the VM is placed if either
+//     - the last Java thread without the 'daemon' flag terminates
+//     - System.exit() is called
+//     - exit() is invoked on the VM instance.
 //
-// The API provided is non-blocking and new threads can be added at any
-// time using run_thread().
+//   Once EXITED is reached, the only supported operation is
 //
 
 
@@ -136,7 +136,7 @@ impl VM {
 		// acknowledge shutdown, which is strictly after the exit code is
 		// capture in self.exit_code. As race conditions on self are impossible, 
 		// a single check on is_exited() is sufficient.
-		if self.is_exited() {
+		if self.is_exited().is_some() {
 			return None;
 		}
 
@@ -172,10 +172,12 @@ impl VM {
 	// ----------------------------------------------
 	// Check if the VM has exited already (see class docs for a more detailed
 	// explanation of possible lifetime states). This method is an inherent
-	// race condition.
-	pub fn is_exited(&self) -> bool {
+	// race condition. The return value is None if the VM is not exited yet
+	// and otherwise Some() of the exit code. See exit() for a description
+	// of exit codes.
+	pub fn is_exited(&self) -> Option<int> {
 		if self.exit_code.is_some() {
-			return true;
+			return self.exit_code;
 		} 
 
 		// from outside view, is_exited() is a simple getter that does
@@ -190,8 +192,9 @@ impl VM {
 					this.exit_code = Some(code);
 
 					// acknowledge - this renders our broker chan and port hung up
+					// but because exit_code is set we know now to use them.
 					this.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_ACK_SHUTDOWN));
-					return true;
+					return this.exit_code;
 				},
 				// since the broker cannot hang up before we acknowledge
 				// (and control would not have reached here in this case)
@@ -199,7 +202,7 @@ impl VM {
 				None => (),
 			}
 		}
-		return false;
+		return None;
 	}
 
 
@@ -220,7 +223,7 @@ impl VM {
 		// Ignore any failures happening on the way - we may be racing against
 		// a Java thread calling System.exit().
 		if self.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_DO_SHUTDOWN)) {
-			while !self.is_exited() {}
+			while self.is_exited().is_none() {}
 		}
 	}
 } 
