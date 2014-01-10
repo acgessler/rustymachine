@@ -139,7 +139,7 @@ impl VM {
 		// acknowledge shutdown, which is strictly after the exit code is
 		// capture in self.exit_code. As race conditions on self are impossible, 
 		// a single check on is_exited() is sufficient.
-		if self.is_exited().is_some() {
+		if self.is_exited() {
 			return None;
 		}
 
@@ -158,18 +158,29 @@ impl VM {
 
 
 	// ----------------------------------------------
-	// Exit the VM. This interrupts all threads and
-	// therefore forces them to terminate.
+	// Exit the VM if it is not EXITED. This interrupts all threads and
+	// therefore forces them to terminate. This method inherently races with
+	// running Java threads, which might as well terminate on their own.
 	//
 	// This is a blocking API. It returns the exit code of the Java program,
-	// i.e. the value given to System.exit(), a 0 if all threads exited normally
-	// and an undefined negative value if a terminal exception caused the exit.
+	// i.e. the value given to System.exit(), a 0 if all threads exited normally,
+	// an implementation-defined negative value if a terminal exception caused the 
+	// exit, and, if at the time exit() performs its duties the VM is not EXITED 
+	// yet, another implementation-defined negative value.
 	//
 	// exit() is idempotent.
 	pub fn exit(mut self) -> int {
 		self.intern_await_exit();
 		self.exit_code.unwrap()
 		// because we own `self`, the destructor drop() gets called
+	}
+
+
+	// ----------------------------------------------
+	// Convenience method for checking whether the VM is EXITED or not.
+	// This is equivalent to checking whether get_exit_code() is Some()
+	pub fn is_exited(&self) -> bool {
+		self.get_exit_code().is_some()
 	}
 
 
@@ -180,7 +191,7 @@ impl VM {
 	// is an inherent race condition. The return value is None if the VM is not 
 	// exited yet and otherwise Some() of the exit code. See exit() for a 
 	// description of exit codes.
-	pub fn is_exited(&self) -> Option<int> {
+	pub fn get_exit_code(&self) -> Option<int> {
 		if self.exit_code.is_some() {
 			return self.exit_code;
 		} 
@@ -190,24 +201,21 @@ impl VM {
 		// is_exited() polls the broker's exit status and acknowledges
 		// reception, allowing the broker to destruct itself. 
 		let this = unsafe { transmute_mut(self) };
+		
+		match this.broker_port.try_recv() {
+			Some(BROKER_TO_VM_DID_SHUTDOWN(code)) => {
+				this.exit_code = Some(code);
 
-		loop {
-			match this.broker_port.try_recv() {
-				Some(BROKER_TO_VM_DID_SHUTDOWN(code)) => {
-					this.exit_code = Some(code);
-
-					// acknowledge - this renders our broker chan and port hung up
-					// but because exit_code is set we know now to use them.
-					this.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_ACK_SHUTDOWN));
-					return this.exit_code;
-				},
-				// since the broker cannot hang up before we acknowledge
-				// (and control would not have reached here in this case)
-				// this means there is no more message.
-				None => (),
-			}
+				// acknowledge - this renders our broker chan and port hung up
+				// but because exit_code is set we know now to use them.
+				this.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_ACK_SHUTDOWN));
+				this.exit_code
+			},
+			// since the broker cannot hang up before we acknowledge
+			// (and control would not have reached here in this case)
+			// this means there is no more message.
+			None => None,
 		}
-		return None;
 	}
 
 
@@ -228,7 +236,7 @@ impl VM {
 		// Ignore any failures happening on the way - we may be racing against
 		// a Java thread calling System.exit().
 		if self.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_DO_SHUTDOWN)) {
-			while self.is_exited().is_none() {}
+			while !self.is_exited() {}
 		}
 	}
 } 
@@ -249,43 +257,44 @@ mod tests {
 
 	#[test]
 	fn test_vm_init_exit() {
-		let v = VM::new(test_get_real_classloader());
+		let mut v = VM::new(test_get_real_classloader());
 		assert!(!v.is_exited());
 		v.exit();
+	}
+
+	#[test]
+	fn test_vm_init_post_exit_access() {
+		let mut v = VM::new(test_get_real_classloader());
+		assert!(!v.is_exited());
+
+		// CREATED -> RUNNING
+		assert!(v.run_thread("","",None).is_some());
+
+		// busy wait for EXITED, but do not kill the VM. This simulates what
+		// happens if the VM is exited because of the Java program terminating.
+		while !v.is_exited() {}
+
 		assert!(v.is_exited());
-		assert!(v.run_thread(~"",~"",None).is_none());
+		assert!(v.run_thread("","",None).is_none());
 	}
 
 	#[test]
 	fn test_vm_init_threads_entrypoints_not_found() {
 		// these threads are going to fail as the entry point cannot be found
-		let v = VM::new(test_get_real_classloader());
-		assert!(v.run_thread(~"",~"",None).is_some());
-		assert!(v.run_thread(~"",~"",None).is_some());
+		let mut v = VM::new(test_get_real_classloader());
+
+		// CREATED -> RUNNING
+		assert!(v.run_thread("","",None).is_some());
+		assert!(v.run_thread("","",None).is_some());
 		assert!(v.exit() < 0);
-		assert!(v.is_exited());
 	}
 
 	#[test]
-	fn test_vm_init_threads_entrypoints_not_found() {
+	fn test_vm_init_threads_empty_main() {
 		// these threads are going to succeed however - the corresponding program is empty
-		let v = VM::new(test_get_real_classloader());
-		assert!(v.run_thread(~"EmptyClassWithMain",~"main",None).is_some());
-		assert!(v.run_thread(~"EmptyClassWithMain",~"main",None).is_some());
+		let mut v = VM::new(test_get_real_classloader());
+		assert!(v.run_thread("EmptyClassWithMain","main",None).is_some());
+		assert!(v.run_thread("EmptyClassWithMain","main",None).is_some());
 		assert_eq!(v.exit(), 0);
-		assert!(v.is_exited());
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
