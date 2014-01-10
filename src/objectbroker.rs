@@ -453,7 +453,9 @@ impl ObjectBroker {
 					objects.remove(&b);
 				}
 				else if owner == 0 {
-					self.objects_owned.get_mut(&b).intern_release();
+					if !self.objects_owned.get_mut(&b).intern_release() {
+						self.objects_owned.pop(&b);
+					}
 				}
 				else {
 					let t = threads.get(&owner);
