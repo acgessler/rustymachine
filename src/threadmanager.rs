@@ -85,7 +85,7 @@ pub struct ThreadManager {
 	priv state : ThreadManagerState,
 }
 
-
+#[deriving(Eq)]
 pub enum ThreadManagerState {
 	// initial state when no thread has been added yet
 	TMS_NoThreadSeenYet,
@@ -138,6 +138,7 @@ impl ThreadManager {
 			daemon : false,
 		});
 
+		self.alive_nondaemon_count += 1;
 		self.state = TMS_Running;
 	}
 
