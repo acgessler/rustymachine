@@ -29,6 +29,7 @@ use extra::comm::{DuplexStream};
 
 use object::{JavaObject, JavaObjectId};
 use threadmanager::{ThreadManager, RemoteThreadOpMessage};
+use threadmanager;
 use vm;
 
 // Enumerates all possible types of accessing objects.
@@ -171,7 +172,7 @@ pub struct ObjectBroker {
 	priv objects_owned : ObjectSet,
 
 	priv in_port : Port<ObjectBrokerMessage>,
-	priv out_chan : HashMap<uint, Chan<ObjectBrokerMessage>>,
+	priv thread_chans : HashMap<uint, Chan<ObjectBrokerMessage>>,
 
 	// this is duplicated into all threads
 	priv in_shared_chan : SharedChan<ObjectBrokerMessage>,
@@ -218,7 +219,7 @@ impl ObjectBroker {
 			in_shared_chan : input,
 
 			// maps thread-id to the corresponding channels to send data to
-			out_chan : HashMap::with_capacity(OB_INITIAL_THREAD_CAPACITY),
+			thread_chans : HashMap::with_capacity(OB_INITIAL_THREAD_CAPACITY),
 
 			// waiting queue for messages sent to objects that are currently
 			// being transferred between threads.
@@ -249,6 +250,11 @@ impl ObjectBroker {
 
 	// ----------------------------------------------
 	fn handle_message(&mut self) -> bool {
+		
+		// recv() can not fail because that would mean the SharedChan had 
+		// been deallocated, which means the VM ceased to exist. Per 
+		// contract it sends vm::VM_TO_BROKER_ACK_SHUTDOWN before it does 
+		// so, and after we receive this message we never recv() again.
 		match self.in_port.recv() {
 
 			OB_REMOTE_OBJECT_OP(a, b, remote_op) => {
@@ -285,30 +291,58 @@ impl ObjectBroker {
 				// is a reserved value.
 				assert!(a != 0);
 
-				let ref mut threads = self.out_chan;
-				assert!(!threads.contains_key(&a));
-				threads.insert(a, chan);
+				assert!(!self.thread_chans.contains_key(&a));
+				self.thread_chans.insert(a, chan);
 				debug!("object broker registered with thread {}", a);
+
+				// also register the thread with the thread manager
+				// TODO: GID
+				self.threads.add_thread(a, 0);
+				assert_eq!(self.threads.get_state(), threadmanager::TMS_Running);
 			},
 
 
 			OB_UNREGISTER(a, in_objects) => {
-				let ref mut threads = self.out_chan;
-				let ref mut objects = self.objects_with_owners;
-
-				assert!(threads.contains_key(&a));
-				threads.pop(&a);
+				assert!(self.thread_chans.contains_key(&a));
+				self.thread_chans.pop(&a);
 
 				// own all objects
 				for (a,b) in in_objects.move_iter() {
 					self.objects_owned.insert(a,b);
-					*objects.get_mut(&a) = 0;
+					*self.objects_with_owners.get_mut(&a) = 0;
 				}
 
+				self.verify_thread_owns_no_objects(a);
+
 				debug!("object broker unregistered with thread {}", a);
+
+				// unregister the thread from threadmanager and check if this
+				// was the last non-daemon thread. In this case, we initiate
+				// the shutdown sequence with the "success" exit code of 0.
+				self.threads.remove_thread(a);
+				match self.threads.get_state() {
+					threadmanager::TMS_NoThreadSeenYet => fail!("logic error, impossible state"),
+					threadmanager::TMS_Running => (),
+					threadmanager::TMS_AllNonDaemonsDead => {
+						self.shutdown_protocol(0);
+					},
+				}
 			},
 		}
 		return true;
+	}
+
+
+	#[cfg(debug)]
+	#[cfg(test)]
+	fn verify_thread_owns_no_objects(&self, a : uint) {
+		for (bob, obt) in self.objects_with_owners.iter() {
+			assert!(*obt != a);
+		}
+	}
+
+	#[cfg(release)]
+	fn verify_thread_owns_no_objects(&self, a : uint) {
 	}
 
 
@@ -324,12 +358,12 @@ impl ObjectBroker {
 		
 		// send a shutdown message to all threads, including the one
 		// who initiated the shutdown. 
-		for (_, chan) in self.out_chan.iter() {
+		for (_, chan) in self.thread_chans.iter() {
 			chan.send(OB_SHUTDOWN(0, exit_code));
 		}
 
 		// and wait for them to unregister
-		while self.out_chan.len() > 0 {
+		while self.thread_chans.len() > 0 {
 			let res = self.handle_message();
 			// this may not cause the objectbroker to destruct itself
 			assert_eq!(res, true);
@@ -352,7 +386,7 @@ impl ObjectBroker {
 			REMOTE_WHO_OWNS => (),
 			REMOTE_DISOWN(obj,receiver) => { 
 				{	let ref mut objects = self.objects_with_owners;
-					let ref mut threads = self.out_chan;
+					let ref mut threads = self.thread_chans;
 
 					// must own object to be able to disown it
 					assert!(*objects.get(&b) == a);
@@ -385,7 +419,7 @@ impl ObjectBroker {
 		}
 
 		let ref mut objects = self.objects_with_owners;
-		let ref mut threads = self.out_chan;
+		let ref mut threads = self.thread_chans;
 
 		match op {
 			REMOTE_ADD_REF => {		
@@ -481,7 +515,7 @@ mod tests {
 	type test_proc = proc(&SharedChan<ObjectBrokerMessage>, Port<ObjectBrokerMessage>) -> ();
 
 	// ----------------------------------------------
-	fn test_setup(a : test_proc, b : test_proc) {
+	fn test_setup(a : test_proc, b : test_proc, expect_success_exit_code : bool) {
 		let (port, chan) = Chan::new();
 		let mut ob = ObjectBroker::new(chan);
 		let chan = ob.launch();
@@ -517,12 +551,14 @@ mod tests {
 		// at this point, both threads unregistered and the VM is therefore
 		// supposed to shut down because no non-daemon thread is alive.
 		// this gives an exit code of 0
-	/*	match port.recv() {
-			vm::BROKER_TO_VM_DID_SHUTDOWN(0) => (),
+		match port.recv() {
+			vm::BROKER_TO_VM_DID_SHUTDOWN(exit_code) 
+				if exit_code == 0 || !expect_success_exit_code => (),
+
 			_ => assert!(false),
 		}
 
-		chan.send(OB_VM_TO_BROKER(vm::VM_TO_BROKER_ACK_SHUTDOWN)); */
+		chan.send(OB_VM_TO_BROKER(vm::VM_TO_BROKER_ACK_SHUTDOWN)); 
 	}
 
 
@@ -584,7 +620,7 @@ mod tests {
 					_ => assert!(false),
 				}
 			}
-		);
+		, false);
 	}
 
 
@@ -629,9 +665,12 @@ mod tests {
 					},
 					_ => assert!(false),
 				}
-			}
-		);
 
+				// release the object. Otherwise we will assert upon unregistering
+				// this thread given that it still owns an object.
+				input.send(OB_REMOTE_OBJECT_OP(2,15,REMOTE_RELEASE));
+			}
+		, true);
 	}
 }
 
