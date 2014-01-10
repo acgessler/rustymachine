@@ -126,6 +126,11 @@ impl VM {
 	// None is returned if the VM was exited already, and Some(tid) otherwise
 	// where tid is the unique identifier of the new thread. 
 	//
+	// Note: failure to locate the given class, method or object does 
+	// not result in a failure to run the thread, but rather throws a
+	// fatal exception in that thread, causing it to fail before it runs
+	// any user code.
+	//
 	pub fn run_thread(&mut self, class : &str, method : &str, obj : Option<JavaObjectId>) -> Option<uint> {
 		// Problem: if broker is already exited, broker_chan is hung up and
 		// causes propagating failure as soon as ThreadContext registers.
@@ -170,11 +175,11 @@ impl VM {
 
 
 	// ----------------------------------------------
-	// Check if the VM has exited already (see class docs for a more detailed
-	// explanation of possible lifetime states). This method is an inherent
-	// race condition. The return value is None if the VM is not exited yet
-	// and otherwise Some() of the exit code. See exit() for a description
-	// of exit codes.
+	// Check if the VM is in the EXITED lifetime state (see class docs for 
+	// a more detailed explanation of possible lifetime states). This method 
+	// is an inherent race condition. The return value is None if the VM is not 
+	// exited yet and otherwise Some() of the exit code. See exit() for a 
+	// description of exit codes.
 	pub fn is_exited(&self) -> Option<int> {
 		if self.exit_code.is_some() {
 			return self.exit_code;
@@ -244,9 +249,31 @@ mod tests {
 
 	#[test]
 	fn test_vm_init_exit() {
-		//let v = VM::new(test_get_real_classloader());
+		let v = VM::new(test_get_real_classloader());
+		assert!(!v.is_exited());
+		v.exit();
+		assert!(v.is_exited());
+		assert!(v.run_thread(~"",~"",None).is_none());
+	}
 
-		//v.exit();
+	#[test]
+	fn test_vm_init_threads_entrypoints_not_found() {
+		// these threads are going to fail as the entry point cannot be found
+		let v = VM::new(test_get_real_classloader());
+		assert!(v.run_thread(~"",~"",None).is_some());
+		assert!(v.run_thread(~"",~"",None).is_some());
+		assert!(v.exit() < 0);
+		assert!(v.is_exited());
+	}
+
+	#[test]
+	fn test_vm_init_threads_entrypoints_not_found() {
+		// these threads are going to succeed however - the corresponding program is empty
+		let v = VM::new(test_get_real_classloader());
+		assert!(v.run_thread(~"EmptyClassWithMain",~"main",None).is_some());
+		assert!(v.run_thread(~"EmptyClassWithMain",~"main",None).is_some());
+		assert_eq!(v.exit(), 0);
+		assert!(v.is_exited());
 	}
 }
 
