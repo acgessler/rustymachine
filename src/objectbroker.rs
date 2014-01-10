@@ -136,6 +136,13 @@ pub enum ObjectBrokerMessage {
 	OB_SHUTDOWN(uint, int)
 }
 
+#[deriving(Eq)]
+enum ShutdownState {
+	NOT_IN_SHUTDOWN,
+	SHUTTING_DOWN,
+	SHUT_DOWN,
+}
+
 
 // The ObjectBroker handles ownership for concurrently accessed
 // objects. At every time, every object has one well-defined owner.
@@ -173,9 +180,12 @@ pub struct ObjectBroker {
 	// all further requests to the same object are saved 
 	// up and dispatched to whomever gains new ownership
 	// of the objects. 
-	priv waiting_shelf : HashMap<JavaObjectId, ~[ObjectBrokerMessage]>
+	priv waiting_shelf : HashMap<JavaObjectId, ~[ObjectBrokerMessage]>,
 
 	// TODO: how to guarantee object transfer if threads are blocking?
+
+
+	priv shutdown_state : ShutdownState,
 }
 
 static NO_THREAD_INDEX : uint = 0;
@@ -212,7 +222,9 @@ impl ObjectBroker {
 
 			// waiting queue for messages sent to objects that are currently
 			// being transferred between threads.
-			waiting_shelf : HashMap::with_capacity(OB_INITIAL_WAITING_SHELF_CAPACITY)
+			waiting_shelf : HashMap::with_capacity(OB_INITIAL_WAITING_SHELF_CAPACITY),
+
+			shutdown_state : NOT_IN_SHUTDOWN,
 		}
 	}
 
@@ -254,6 +266,8 @@ impl ObjectBroker {
 						self.shutdown_protocol(EXIT_CODE_VM_INITIATED_SHUTDOWN),
 
 					vm::VM_TO_BROKER_ACK_SHUTDOWN => {
+						assert_eq!(self.shutdown_state, SHUT_DOWN);
+
 						// trigger self-destruction
 						return false;
 					}
@@ -300,10 +314,30 @@ impl ObjectBroker {
 
 	// ----------------------------------------------
 	fn shutdown_protocol(&mut self, exit_code : int) {
-		debug!("object broker shutting down with exit code {}",exit_code);
-		
-		// TODO - actually shutdown threads
+		// ignore this if we're already shutting down (regardless if complete or not)
+		if self.shutdown_state != NOT_IN_SHUTDOWN {
+			return;
+		}
 
+		debug!("object broker initiating shutdown protocol with exit code {}",exit_code);
+		self.shutdown_state = SHUTTING_DOWN;
+		
+		// send a shutdown message to all threads, including the one
+		// who initiated the shutdown. 
+		for (_, chan) in self.out_chan.iter() {
+			chan.send(OB_SHUTDOWN(0, exit_code));
+		}
+
+		// and wait for them to unregister
+		while self.out_chan.len() > 0 {
+			let res = self.handle_message();
+			// this may not cause the objectbroker to destruct itself
+			assert_eq!(res, true);
+		}
+
+		// notify the VM - it may now send an ACK, causing us
+		// to hang up on all connections.
+		self.shutdown_state = SHUT_DOWN;
 		self.vm_chan.send(vm::BROKER_TO_VM_DID_SHUTDOWN(exit_code));
 	}
 
@@ -436,14 +470,17 @@ impl ObjectBroker {
 #[cfg(test)]
 mod tests {
 	use objectbroker::*;
+	use vm;
 
 	use object::{JavaObject};
 	use std::task::{task};
+	use std::hashmap::{HashMap};
 
 	use classloader::tests::{test_get_real_classloader};
 
-	type test_proc = proc(SharedChan<ObjectBrokerMessage>, Port<ObjectBrokerMessage>) -> ();
+	type test_proc = proc(&SharedChan<ObjectBrokerMessage>, Port<ObjectBrokerMessage>) -> ();
 
+	// ----------------------------------------------
 	fn test_setup(a : test_proc, b : test_proc) {
 		let (port, chan) = Chan::new();
 		let mut ob = ObjectBroker::new(chan);
@@ -457,7 +494,9 @@ mod tests {
 			let (port, chan) = Chan::new();
 			input1.send(OB_REGISTER(1, chan));
 
-			a(input1, port);
+			a(&input1, port);
+			// ensure proper cleanup - without the objectbroker would fail on the hung up channel
+			input1.send(OB_UNREGISTER(1, HashMap::new()));
 		}
 
 		// thread 2
@@ -468,14 +507,90 @@ mod tests {
 			let (port, chan) = Chan::new();
 			input2.send(OB_REGISTER(2, chan));
 
-			b(input2, port);
+			b(&input2, port);
+			input2.send(OB_UNREGISTER(2, HashMap::new()));
 		}
 
 		f1.recv();
 		f2.recv();
+
+		// at this point, both threads unregistered and the VM is therefore
+		// supposed to shut down because no non-daemon thread is alive.
+		// this gives an exit code of 0
+	/*	match port.recv() {
+			vm::BROKER_TO_VM_DID_SHUTDOWN(0) => (),
+			_ => assert!(false),
+		}
+
+		chan.send(OB_VM_TO_BROKER(vm::VM_TO_BROKER_ACK_SHUTDOWN)); */
 	}
 
 
+	// ----------------------------------------------
+	// Shutdown initiated by VM - VM::exit() called
+	#[test]
+	fn test_shutdown_initiated_by_vm() {
+		let (port, chan) = Chan::new();
+		let mut ob = ObjectBroker::new(chan);
+		let chan = ob.launch();
+
+		chan.send(OB_VM_TO_BROKER(vm::VM_TO_BROKER_DO_SHUTDOWN));
+
+		// must confirm the shutdown with a negative exit code
+		match port.recv() {
+			vm::BROKER_TO_VM_DID_SHUTDOWN(EXIT_CODE_VM_INITIATED_SHUTDOWN) => (),
+			_ => assert!(false),
+		}
+
+		// after we ack that we received the shutdown confirmation, the connection
+		// should die - but not earlier.
+		chan.send(OB_VM_TO_BROKER(vm::VM_TO_BROKER_ACK_SHUTDOWN));
+	}
+
+
+
+	// ----------------------------------------------
+	// Shutdown initiated by thread - i.e. System.exit() called
+	#[test]
+	fn test_shutdown_initiated_by_threads() {
+		let mut cl = test_get_real_classloader();
+		let v = cl.add_from_classfile("EmptyClass").unwrap_all();
+
+		let (sync_port, sync_chan) = Chan::new();
+		let (sync_port2, sync_chan2) = Chan::new();
+
+		test_setup(
+			proc(input : &SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
+				sync_port2.recv();
+				input.send(OB_SHUTDOWN(1,15));
+				sync_chan.send(1);
+
+				// even the initiating thread gets a message
+				let request = output.recv();
+				match request {
+					OB_SHUTDOWN(0,15) => (),
+					_ => assert!(false),
+				}
+			},
+			proc(input : &SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
+				sync_chan2.send(1);
+				sync_port.recv();
+				input.send(OB_SHUTDOWN(2,16));
+
+				// the first exit code wins so the exit code cannot be 16
+				let request = output.recv();
+				match request {
+					OB_SHUTDOWN(0,15) => (),
+					_ => assert!(false),
+				}
+			}
+		);
+	}
+
+
+	// ----------------------------------------------
+	// Object transfers semantics and regular shutdown caused by all
+	// non-daemon threads having died.
 	#[test]
 	fn test_object_broker() {
 		let mut cl = test_get_real_classloader();
@@ -483,7 +598,7 @@ mod tests {
 
 		let (sync_port, sync_chan) = Chan::new();
 		test_setup(
-			proc(input : SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
+			proc(input : &SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
 				// register object 15
 				input.send(OB_REMOTE_OBJECT_OP(1,15,REMOTE_ADD_REF));
 				sync_chan.send(1);
@@ -497,7 +612,7 @@ mod tests {
 					_ => assert!(false),
 				}
 			},
-			proc(input : SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
+			proc(input : &SharedChan<ObjectBrokerMessage>, output: Port<ObjectBrokerMessage>) {
 				// we have to ensure that object 15 is registered. Normally,
 				// this is implicitly guaranteed because how would we otherwise
 				// know about its id?
@@ -511,12 +626,12 @@ mod tests {
 					OB_REMOTE_OBJECT_OP(1,15,REMOTE_DISOWN(val,2)) => {
 						let cl = val.get_class();
 						assert_eq!(*cl.get().get_name(), ~"EmptyClass");
-						input.send(OB_SHUTDOWN(1,-1));
 					},
 					_ => assert!(false),
 				}
 			}
 		);
+
 	}
 }
 

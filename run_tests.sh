@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # avoid obstructing output
 export RUST_TEST_TASKS=1  

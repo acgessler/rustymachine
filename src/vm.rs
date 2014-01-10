@@ -237,6 +237,19 @@ impl Drop for VM {
 }
 
 
+#[cfg(test)]
+mod tests {
+	use vm::*;
+	use classloader::tests::*;
+
+	#[test]
+	fn test_vm_init_exit() {
+		//let v = VM::new(test_get_real_classloader());
+
+		//v.exit();
+	}
+}
+
 
 
 
