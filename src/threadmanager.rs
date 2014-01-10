@@ -147,7 +147,7 @@ impl ThreadManager {
 	// Unregister a thread from the ThreadManager
 	pub fn remove_thread(&mut self, tid : uint) {
 		let t = self.threads.pop(&tid).unwrap();
-		if t.daemon {
+		if !t.daemon {
 			self.alive_nondaemon_count -= 1;
 		}
 		self.state = if self.alive_nondaemon_count == 0 { TMS_AllNonDaemonsDead } else { TMS_Running };
