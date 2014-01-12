@@ -255,17 +255,16 @@ impl ClassLoader {
 			// 1.
 			// constant pool
 			let constants = match ClassLoader::load_constant_pool(reader) {
-					Err(s) => return Err(s), 
-					Ok(n) => n
+				Err(s) => return Err(s), 
+				Ok(n) => n
 			};
 
 			let access = reader.read_be_u16() as uint;
 	
 			// 2.
 			// our own name - only used for verification
-			let own_name = match  ClassLoader::resolve_class_cpool_entry(
-				constants, reader.read_be_u16() as uint
-			) {
+			let own_name = match  ClassLoader::resolve_class_cpool_entry(constants, 
+				reader.read_be_u16() as uint) {
 				Err(s) => return Err(s), 
 				Ok(n) => n
 			};
@@ -273,9 +272,7 @@ impl ClassLoader {
 			
 			// 3.
 			// super class name and implemented interfaces - must be loaded
-			let future_parents = match self.load_class_parents(
-				constants, reader
-			) {
+			let future_parents = match self.load_class_parents(constants, reader) {
 				Err(s) => return Err(s), 
 				Ok(n) => n
 			};
@@ -467,16 +464,14 @@ impl ClassLoader {
 		for i in range(0, methods_count) {
 			let access = reader.read_be_u16() as uint;
 			// I definitely want some kind of a monadic "DO" notation as for Haskell
-			let name = match ClassLoader::resolve_name_cpool_entry(
-				constants, reader.read_be_u16() as uint
-			) {
+			let name = match ClassLoader::resolve_name_cpool_entry(constants, 
+				reader.read_be_u16() as uint) {
 				Err(s) => return Err(s),
 				Ok(n) => n
 			};
 
-			let desc = match ClassLoader::resolve_name_cpool_entry(
-				constants, reader.read_be_u16() as uint
-			) {
+			let desc = match ClassLoader::resolve_name_cpool_entry(constants, 
+				reader.read_be_u16() as uint) {
 				Err(s) => return Err(s),
 				Ok(n) => n
 			};
@@ -487,9 +482,8 @@ impl ClassLoader {
 			let mut code_attr : Option<CodeBlock> = None;
 			let attr_count = reader.read_be_u16() as uint;
 			for i in range(0, attr_count) {
-				let name = match ClassLoader::resolve_name_cpool_entry(
-					constants, reader.read_be_u16() as uint
-				) {
+				let name = match ClassLoader::resolve_name_cpool_entry(constants, 
+					reader.read_be_u16() as uint) {
 					Err(s) => return Err(s),
 					Ok(n) => n
 				};
