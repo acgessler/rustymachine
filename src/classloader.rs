@@ -33,8 +33,7 @@ use def::*;
 use class::{JavaClass, JavaClassRef, JavaClassFutureRef};
 use classpath::{ClassPath};
 use code::{CodeBlock, ExceptionHandler};
-
-
+use method::{JavaMethod};
 
 
 // Abstract trait to describe a class loader's basic behaviour
@@ -216,24 +215,23 @@ impl ClassLoader {
 	// is thus immediately available.
 	fn check_is_present_or_enqueue(&mut self,  name : &str) -> Option<JavaClassFutureRef> {
 		unsafe { 
-			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| -> Option<JavaClassFutureRef> {
-				match table.find_mut(&name.into_owned()) {
-					Some(&ClassLoaded(ref elem)) => {
-						return Some(JavaClassFutureRef::new(Future::from_value(Ok((*elem).clone()))));
-					},
-					Some(&ClassPending(ref mut chans)) => {
-						let (mut port, chan) = Chan::new();
-						chans.push(chan);
-						return Some(JavaClassFutureRef::new(Future::from_port(port)));
-					},
-					None => (),
-				}
+		self.ClassTableRef.unsafe_access(|table : &mut ClassTable| -> Option<JavaClassFutureRef> {
+			match table.find_mut(&name.into_owned()) {
+				Some(&ClassLoaded(ref elem)) => {
+					return Some(JavaClassFutureRef::new(Future::from_value(Ok((*elem).clone()))));
+				},
+				Some(&ClassPending(ref mut chans)) => {
+					let (mut port, chan) = Chan::new();
+					chans.push(chan);
+					return Some(JavaClassFutureRef::new(Future::from_port(port)));
+				},
+				None => (),
+			}
 
-				// add a new waiting queue
-				table.insert(name.into_owned(), ClassPending(~[]));
-				None
-			})
-		}
+			// add a new waiting queue
+			table.insert(name.into_owned(), ClassPending(~[]));
+			None
+		})}
 	}
 
 
@@ -256,35 +254,32 @@ impl ClassLoader {
 
 			// 1.
 			// constant pool
-			let maybe_cpool = ClassLoader::load_constant_pool(reader);
-			match maybe_cpool {
-				Err(s) => return Err(s), _ => ()
-			}
+			let constants = match ClassLoader::load_constant_pool(reader) {
+					Err(s) => return Err(s), 
+					Ok(n) => n
+			};
 
-			let constants = maybe_cpool.unwrap();
 			let access = reader.read_be_u16() as uint;
 	
 			// 2.
 			// our own name - only used for verification
-			let maybe_name = ClassLoader::resolve_class_cpool_entry(
-				constants, reader.read_be_u16() as uint);
-			match maybe_name {
-				Err(s) => return Err(s), _ => ()
-			}
-
-			debug!("class name embedded in .class file is {}", maybe_name.unwrap());
+			let own_name = match  ClassLoader::resolve_class_cpool_entry(
+				constants, reader.read_be_u16() as uint
+			) {
+				Err(s) => return Err(s), 
+				Ok(n) => n
+			};
+			debug!("class name embedded in .class file is {}", own_name);
 			
 			// 3.
 			// super class name and implemented interfaces - must be loaded
-			let maybe_parents = self.load_class_parents(
+			let future_parents = match self.load_class_parents(
 				constants, reader
-			);
+			) {
+				Err(s) => return Err(s), 
+				Ok(n) => n
+			};
 
-			match maybe_parents {
-				Err(s) => return Err(s), _ => ()
-			}
-
-			let future_parents = maybe_parents.unwrap();
 			if future_parents.len() == 0 {
 				if name != ~"java.lang.Object" && (access & ACC_INTERFACE) == 0 {
 					return Err(~"Only interfaces and java.lang.Object can go without super class");
@@ -295,7 +290,8 @@ impl ClassLoader {
 			let fields_count = reader.read_be_u16() as uint;
 
 			// 5. class and instance methods
-			let methods_count = reader.read_be_u16() as uint;
+			let methods = self.read_methods(reader, constants);
+		
 
 			/*
 				// 6. class attributes - we skip them for now
@@ -464,10 +460,63 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
+	// Loads the methods (+ static functions) section from a .class file
+	fn read_methods(&self, reader: &mut Reader, constants : &[Constant]) -> Result<~[JavaMethod], ~str> {
+		let mut methods : ~[JavaMethod] = ~[];
+		let methods_count = reader.read_be_u16() as uint;
+		for i in range(0, methods_count) {
+			let access = reader.read_be_u16() as uint;
+			// I definitely want some kind of a monadic "DO" notation as for Haskell
+			let name = match ClassLoader::resolve_name_cpool_entry(
+				constants, reader.read_be_u16() as uint
+			) {
+				Err(s) => return Err(s),
+				Ok(n) => n
+			};
+
+			let desc = match ClassLoader::resolve_name_cpool_entry(
+				constants, reader.read_be_u16() as uint
+			) {
+				Err(s) => return Err(s),
+				Ok(n) => n
+			};
+
+			// scan for the "Code" attribute
+			// TODO: for proper interpretation and fully secure linking we will
+			// need to also process other attributes.
+			let mut code_attr : Option<CodeBlock> = None;
+			let attr_count = reader.read_be_u16() as uint;
+			for i in range(0, attr_count) {
+				let name = match ClassLoader::resolve_name_cpool_entry(
+					constants, reader.read_be_u16() as uint
+				) {
+					Err(s) => return Err(s),
+					Ok(n) => n
+				};
+
+				if name == ~"Code" {
+					code_attr = match self.load_code_attribute(constants, reader) {
+						Err(s) => return Err(s),
+						Ok(n) => Some(n),
+					};
+				}
+			}
+
+			if code_attr.is_none() {
+				return Err(~"failed to read [Code] attribute from method attribute table");
+			}
+
+			methods.push(JavaMethod::new(name,desc,code_attr.unwrap()));
+		}
+		Ok(methods)
+	}
+
+
+	// ----------------------------------------------
 	// Load a single attribute of type [Code] from a a .class file reader 
 	// that is positioned correctly to be right behind the attribute head.
 	// http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-4.html#jvms-4.7.3
-	pub fn load_code_attribute(&mut self, constants : &[Constant], reader: &mut Reader) -> 
+	pub fn load_code_attribute(&self, constants : &[Constant], reader: &mut Reader) -> 
 		Result<CodeBlock, ~str> {
 
 		let max_stack = reader.read_be_u16() as uint;
@@ -504,6 +553,19 @@ impl ClassLoader {
 		}
 
 		return Ok(CodeBlock::new(max_stack, max_locals, codebytes, exc_rec));
+	}
+
+
+	// ----------------------------------------------
+	// Given a parsed constant pool and locate an UTF8 string entry in it
+	fn resolve_name_cpool_entry(constants : &[Constant], oneb_index : uint) ->
+		Result<~str,~str>	{
+
+		assert!(oneb_index != 0 && oneb_index <= constants.len());
+		match constants[oneb_index - 1] {
+			CONSTANT_utf8_info(ref s) => Ok(s.clone()),
+			_ => Err(~"name cpool entry is not a CONSTANT_Utf8"),
+		}
 	}
 
 

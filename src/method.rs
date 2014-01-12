@@ -19,8 +19,21 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
+
+use code::{CodeBlock};
+
+
 pub struct JavaMethod {
 	name : ~str,
-	attrs : uint,
+}
+
+
+impl JavaMethod {
+
+	pub fn new(name : ~str, desc : ~str, code : CodeBlock) -> JavaMethod {
+		JavaMethod {
+			name : name
+		}
+	}
 }
 
