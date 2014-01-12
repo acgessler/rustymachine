@@ -83,6 +83,11 @@ pub struct ThreadManager {
 	priv alive_nondaemon_count : uint,
 
 	priv state : ThreadManagerState,
+
+	// stopped threads get moved here so their parameters are still
+	// available. TODO: how to prevent this from growing indefinitely
+	priv stopped_threads : ~[GlobThreadInfo],
+	priv stopped_groups : ~[GlobThreadGroupInfo],
 }
 
 #[deriving(Eq)]
@@ -117,6 +122,9 @@ impl ThreadManager {
 
 			alive_nondaemon_count : 0,
 			state : TMS_NoThreadSeenYet,
+
+			stopped_threads : ~[],
+			stopped_groups : ~[],
 		}
 	}
 
@@ -128,8 +136,74 @@ impl ThreadManager {
 
 
 	// ----------------------------------------------
+	pub fn get_group_size(&self, gid : uint) -> uint {
+		assert!(self.groups.contains_key(&gid));
+
+		// TODO: slow - but keeping backlists is lots of work considering
+		// how rare get_group_size() calls should be. This might be a 
+		// sec issue though.
+		let mut count = 0;
+		for v in self.threads.values().filter(|a| {
+			a.gid == gid
+		}) {
+			count += 1;
+		}
+		count
+	}
+
+
+	// ----------------------------------------------
+	pub fn get_group_size_rec(&self, gid : uint) -> uint {
+		assert!(self.groups.contains_key(&gid));
+
+		// TODO: slow - but keeping backlists is lots of work considering
+		// how rare get_group_size() calls should be. This might be a 
+		// sec issue though.
+		let mut count = self.get_group_size(gid);
+		for v in self.groups.values().filter( |a| { 
+				a.parent_gid.is_some() && a.parent_gid.unwrap() == gid
+		} ){
+			count += self.get_group_size_rec(v.gid);
+		}
+		count
+	}
+
+
+	// ----------------------------------------------
+	// Register a thread group with the ThreadManager
+	pub fn add_group(&mut self, gid : uint, parent_gid : uint) {
+		assert!(self.groups.contains_key(&parent_gid));
+		assert!(!self.groups.contains_key(&gid));
+
+		self.groups.insert(gid, GlobThreadGroupInfo {
+			gid : gid,
+			parent_gid : Some(parent_gid)
+		});
+	}
+
+
+	// ----------------------------------------------
+	// Remove thread group from the ThreadManager. This is
+	// only possible if the group is empty and has no sub-groups.
+	// The group shelved of to the so called 'stopped-groups' list,
+	// which makes the graph of thread groups available even after
+	// it has been removed from the live thread state.
+	pub fn remove_group(&mut self, gid : uint) {
+		assert!(gid != 0);
+		assert!(self.groups.contains_key(&gid));
+		assert_eq!(self.get_group_size_rec(gid), 0);
+
+		let t = self.groups.pop(&gid).unwrap();
+		self.stopped_groups.push(t);
+	}
+
+
+	// ----------------------------------------------
 	// Register a thread with the ThreadManager
 	pub fn add_thread(&mut self, tid : uint, gid : uint) {
+		assert!(!self.threads.contains_key(&tid));
+		assert!(self.groups.contains_key(&gid));
+
 		self.threads.insert(tid, GlobThreadInfo {
 			tid : tid,
 			gid : gid,
@@ -144,12 +218,41 @@ impl ThreadManager {
 
 
 	// ----------------------------------------------
-	// Unregister a thread from the ThreadManager
+	// Unregister a thread from the ThreadManager. The thread
+	// is shelved of to the so called 'stopped-threads' list,
+	// which makes its name, priority and other parameter 
+	// available even after it has been removed from the live
+	// thread state.
 	pub fn remove_thread(&mut self, tid : uint) {
+		assert!(self.threads.contains_key(&tid));
+
 		let t = self.threads.pop(&tid).unwrap();
+
 		if !t.daemon {
 			self.alive_nondaemon_count -= 1;
 		}
+
+		self.stopped_threads.push(t);
+		self.state = if self.alive_nondaemon_count == 0 { TMS_AllNonDaemonsDead } else { TMS_Running };
+	}
+
+
+	// ----------------------------------------------
+	// Change the 'daemon' flag of a given thread with immediate
+	// effect. If this causes the last alive non-daemon thread to
+	// become daemon, the thread manager's state changes to 
+	// TMS_AllNonDaemonsDead
+	pub fn set_daemon(&mut self, tid : uint, daemonize : bool) {
+		assert!(self.threads.contains_key(&tid));
+
+		let old = self.threads.get(&tid).daemon;
+		if old == daemonize {
+			return;
+		}
+		self.threads.get_mut(&tid).daemon = daemonize;
+
+		assert!(!daemonize || self.alive_nondaemon_count > 0);
+		self.alive_nondaemon_count += if daemonize { -1 } else { 1 };
 		self.state = if self.alive_nondaemon_count == 0 { TMS_AllNonDaemonsDead } else { TMS_Running };
 	}
 
@@ -168,4 +271,88 @@ impl ThreadManager {
 }
 
 
+#[cfg(test)]
+mod tests {
+	use threadmanager::*;
+
+	#[test]
+	fn test_threadmanager_lifecycle() {
+		let mut t = ThreadManager::new();
+		assert_eq!(t.get_state(), TMS_NoThreadSeenYet);
+
+		t.add_thread(12, 0);
+		assert_eq!(t.get_state(), TMS_Running);
+		t.add_thread(13, 0);
+
+		t.remove_thread(13);
+		assert_eq!(t.get_state(), TMS_Running);
+
+		t.remove_thread(12);
+		assert_eq!(t.get_state(), TMS_AllNonDaemonsDead);
+
+		t.add_thread(16, 0);
+		assert_eq!(t.get_state(), TMS_Running);
+	}
+
+
+	#[test]
+	fn test_threadmanager_lifecycle_with_groups() {
+		let mut t = ThreadManager::new();
+		assert_eq!(t.get_state(), TMS_NoThreadSeenYet);
+
+		t.add_group(1, 0);
+		t.add_thread(12, 1);
+		t.add_thread(13, 1);
+		t.add_thread(14, 0);
+
+		assert_eq!(t.get_group_size(0), 1);
+		assert_eq!(t.get_group_size_rec(0), 3);
+		assert_eq!(t.get_group_size(1), 2);
+		t.remove_thread(12);
+		assert_eq!(t.get_group_size(1), 1);
+		t.remove_thread(13);
+		assert_eq!(t.get_group_size(1), 0);
+		assert_eq!(t.get_group_size(0), 1);
+		t.remove_group(1);
+	}
+
+
+	#[test]
+	#[should_fail]
+	fn test_threadmanager_groups_cannot_remove_gid0() {
+		let mut t = ThreadManager::new();
+		t.remove_group(0);
+	}
+
+
+	#[test]
+	#[should_fail]
+	fn test_threadmanager_groups_cannot_remove_nonempty_gid() {
+		let mut t = ThreadManager::new();
+
+		t.add_group(1, 0);
+		t.add_thread(12, 1);
+		t.add_thread(13, 1);
+		t.remove_group(1);
+	}
+
+
+	#[test]
+	fn test_threadmanager_lifecycle_with_daemons() {
+		let mut t = ThreadManager::new();
+		t.add_thread(12, 0);
+		t.add_thread(13, 0);
+
+		t.set_daemon(13, true);
+		assert_eq!(t.get_state(), TMS_Running);
+
+		t.remove_thread(13);
+		assert_eq!(t.get_state(), TMS_Running);
+
+		t.set_daemon(12, true);
+		assert_eq!(t.get_state(), TMS_AllNonDaemonsDead);
+	}
+
+	// TODO: test stopped-tid, stopped-gid lists
+}
 
