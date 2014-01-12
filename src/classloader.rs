@@ -41,9 +41,20 @@ use code::{CodeBlock, ExceptionHandler};
 pub trait AbstractClassLoader {
 
 	// ----------------------------------------------
-	// Asynchronously loads a class with the given name. In case
-	// of failure, a simple string error message is returned.
+	// Asynchronously loads a class with the given name using
+	// an implementation-defined method to locate the class file. In 
+	// case of failure, a simple string error message is returned.
+	//
+	// See ClassLoader::add_from_classfile() for the default impl.
 	fn load(&mut self, name : &str) -> JavaClassFutureRef;
+
+
+	// ----------------------------------------------
+	// Asynchronously loads a class with the given name from
+	// the provided byte buffer.
+	//
+	// See ClassLoader::add_from_bytes() for the default impl.
+	fn load_from_bytes(&mut self, name : &str, bytes : ~[u8]) -> JavaClassFutureRef;
 }
 
 
@@ -57,9 +68,13 @@ pub struct ClassLoader {
 
 
 impl AbstractClassLoader for ClassLoader {
-	fn load(&mut self, name : &str) -> JavaClassFutureRef
-	{
+
+	fn load(&mut self, name : &str) -> JavaClassFutureRef	{
 		return self.add_from_classfile(name);
+	}
+
+	fn load_from_bytes(&mut self, name : &str, bytes : ~[u8]) -> JavaClassFutureRef	{
+		return self.add_from_bytes(name, bytes);
 	}
 }
 
@@ -103,6 +118,7 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
+	// Get the immutable classpath that backs this classloader
 	pub fn get_classpath(&self) -> ClassPath
 	{
 		return self.classpath.clone();
@@ -137,9 +153,71 @@ impl ClassLoader {
 		// if it is already being loaded, add ourselves to the list of waiters
 		let cname = name.into_owned();
 
-		let res = unsafe { 
+		let res = self.check_is_present_or_enqueue(name);
+		if res.is_some() {
+			return res.unwrap();
+		}
+
+		debug!("start async loading of class {} from a classpath location", name);
+
+		// TODO: inform waiters also if loading fails
+
+		let self_clone_outer = self.clone();
+		let fut = do Future::spawn {
+			// TODO: if we don't clone() twice, borrowch complains.
+			// May be resolved through https://github.com/mozilla/rust/issues/10617
+			let mut self_clone = self_clone_outer.clone();
+			match self_clone.classpath.locate_and_read(cname) {
+				None => Err(~"failed to locate class file for " + cname),
+				Some(bytes) => {
+					self_clone.intern_add_from_classfile_bytes(cname, bytes)
+				}
+			}
+		};
+		JavaClassFutureRef::new(fut)
+	}
+
+
+	// ----------------------------------------------
+	// Load a class given a byte stream containing a valid .class file.
+	// The given name is the fully qualified name name under which the class 
+	// is added to the class hierarchy.
+	pub fn add_from_bytes(&mut self, name : &str, bytes : ~[u8]) -> JavaClassFutureRef {
+		let res = self.check_is_present_or_enqueue(name);
+		if res.is_some() {
+			return res.unwrap();
+		}
+
+		debug!("start async loading of class {} from a memory location", name);
+
+		// TODO: inform waiters also if loading fails
+
+		let self_clone_outer = self.clone();
+		let cname = name.into_owned();
+
+		let fut = do Future::spawn {
+			// TODO: if we don't clone() twice, borrowch complains.
+			// May be resolved through https://github.com/mozilla/rust/issues/10617
+			let mut self_clone = self_clone_outer.clone();
+			self_clone.intern_add_from_classfile_bytes(cname, bytes)
+		};
+		JavaClassFutureRef::new(fut)
+	}
+
+
+	// IMPL
+
+
+	// ----------------------------------------------
+	// Check if a class with the given name is pending loading or
+	// has been loaded already. In the first case a waiter is enqueued
+	// to receive the result of the pending loading and in the latter 
+	// case the future is constructed directly from the class value and
+	// is thus immediately available.
+	fn check_is_present_or_enqueue(&mut self,  name : &str) -> Option<JavaClassFutureRef> {
+		unsafe { 
 			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| -> Option<JavaClassFutureRef> {
-				match table.find_mut(&cname) {
+				match table.find_mut(&name.into_owned()) {
 					Some(&ClassLoaded(ref elem)) => {
 						return Some(JavaClassFutureRef::new(Future::from_value(Ok((*elem).clone()))));
 					},
@@ -152,39 +230,15 @@ impl ClassLoader {
 				}
 
 				// add a new waiting queue
-				table.insert(cname.clone(), ClassPending(~[]));
+				table.insert(name.into_owned(), ClassPending(~[]));
 				None
 			})
-		};
-		if res.is_some() {
-			return res.unwrap();
 		}
-
-		debug!("start async loading of class {}", name);
-
-		// TODO: inform waiters also if loading fails
-
-		let self_clone_outer = self.clone();
-		let fut = do Future::spawn {
-			// TODO: if we don't clone() twice, borrowch complains.
-			// May be resolved through https://github.com/mozilla/rust/issues/10617
-			let mut self_clone = self_clone_outer.clone();
-			match self_clone.classpath.locate_and_read(cname) {
-				None => Err(~"failed to locate class file for " + cname),
-				Some(bytes) => {
-					self_clone.add_from_classfile_bytes(cname, bytes)
-				}
-			}
-		};
-		JavaClassFutureRef::new(fut)
 	}
 
 
-	// IMPL
-
-
 	// ----------------------------------------------
-	fn add_from_classfile_bytes(&mut self, name : ~str, bytes : ~[u8]) -> 
+	fn intern_add_from_classfile_bytes(&mut self, name : ~str, bytes : ~[u8]) -> 
 		Result<JavaClassRef, ~str> {
 		match result(|| { 
 			let reader = &mut BufReader::new(bytes) as &mut Reader;
@@ -569,8 +623,12 @@ impl Clone for ClassLoader {
 // returns the "DUMMY" error string. Used for testing.
 pub struct DummyClassLoader;
 impl AbstractClassLoader for DummyClassLoader {
-	fn load(&mut self, name : &str) -> JavaClassFutureRef
-	{
+	
+	fn load(&mut self, name : &str) -> JavaClassFutureRef	{
+		return JavaClassFutureRef::new(Future::from_value(Err(~"DUMMY")));
+	}
+
+	fn load_from_bytes(&mut self, name : &str, bytes : ~[u8]) -> JavaClassFutureRef	{
 		return JavaClassFutureRef::new(Future::from_value(Err(~"DUMMY")));
 	}
 }
