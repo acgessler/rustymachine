@@ -19,21 +19,15 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
-extern mod extra;
-extern mod std;
 
-use std::hashmap::HashMap;
-use std::path::PosixPath;
-
-use std::io::mem::BufReader;
+use std::hashmap::{HashMap};
+use std::path::{PosixPath};
+use std::io::mem::{BufReader};
 use std::io::{result, IoError};
+use std::str::{from_utf8_owned_opt};
 
-use std::num::FromPrimitive;
-
-use std::str::from_utf8_owned_opt;
-
-use extra::future::Future;
-use extra::arc::{Arc, RWArc, MutexArc};
+use extra::future::{Future};
+use extra::arc::{Arc, MutexArc};
 
 use def::*;
 use class::{JavaClass, JavaClassRef, JavaClassFutureRef};
@@ -42,33 +36,15 @@ use code::{CodeBlock, ExceptionHandler};
 
 
 
-pub enum JavaClassOrWaitQueue {
-	ClassLoaded(JavaClassRef),
-	ClassPending(~[Chan<Result<JavaClassRef, ~str>>]),
-}
-
-// table of java classes indexed by fully qualified name
-pub type ClassTable = HashMap<~str, JavaClassOrWaitQueue>;
-pub type ClassTableRef = MutexArc<ClassTable>;
-
-
 
 // Abstract trait to describe a class loader's basic behaviour
 pub trait AbstractClassLoader {
+
+	// ----------------------------------------------
+	// Asynchronously loads a class with the given name. In case
+	// of failure, a simple string error message is returned.
 	fn load(&mut self, name : &str) -> JavaClassFutureRef;
 }
-
-
-// Mock class loader that refuses to load any classes and instead just
-// returns the "DUMMY" error string.
-pub struct DummyClassLoader;
-impl AbstractClassLoader for DummyClassLoader {
-	fn load(&mut self, name : &str) -> JavaClassFutureRef
-	{
-		return JavaClassFutureRef::new(Future::from_value(Err(~"DUMMY")));
-	}
-}
-
 
 
 // ClassLoader is clonable as to enable every task to have a copy of it.
@@ -88,11 +64,24 @@ impl AbstractClassLoader for ClassLoader {
 }
 
 
+
+enum JavaClassOrWaitQueue {
+	ClassLoaded(JavaClassRef),
+	ClassPending(~[Chan<Result<JavaClassRef, ~str>>]),
+}
+
+// table of java classes indexed by fully qualified name
+type ClassTable = HashMap<~str, JavaClassOrWaitQueue>;
+type ClassTableRef = MutexArc<ClassTable>;
+
+
 static INITIAL_CLASSLOADER_CAPACITY : uint = 1024;
 
 impl ClassLoader {
 
 	// ----------------------------------------------
+	// Constructs a new classloader given a semicolon-separated list
+	// of viable paths to search for .class files.
 	pub fn new_from_string(classpath : &str) -> ClassLoader {
 		ClassLoader::new(
 				ClassPath::new_from_string(classpath),
@@ -102,6 +91,9 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
+	// Construction using an explicit ClassPath instance, and a shared
+	// class table. This is used to have multiple ClassLoader instances
+	// share their internal concurrent state.
 	pub fn new(classpath : ClassPath, ClassTableRef : ClassTableRef) -> ClassLoader {
 		ClassLoader {
 			classpath : classpath,
@@ -136,8 +128,11 @@ impl ClassLoader {
 
 	
 	// ----------------------------------------------
-	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef
-	{
+	// Load a class given its fully name. The .class file for the class is
+	// located in the classpath and loaded. Afterwards, the java class is
+	// prepared for use with the VM and ultimatively returned. Loading is
+	// asynchronous.
+	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef {
 		// do nothing if the class is already loaded,
 		// if it is already being loaded, add ourselves to the list of waiters
 		let cname = name.into_owned();
@@ -190,8 +185,7 @@ impl ClassLoader {
 
 	// ----------------------------------------------
 	fn add_from_classfile_bytes(&mut self, name : ~str, bytes : ~[u8]) -> 
-		Result<JavaClassRef, ~str>
-	{
+		Result<JavaClassRef, ~str> {
 		match result(|| { 
 			let reader = &mut BufReader::new(bytes) as &mut Reader;
 			
@@ -269,8 +263,7 @@ impl ClassLoader {
 	// ----------------------------------------------
 	// Adds a class instance to the table of loaded classes 
 	// and thereby marks it officially as loaded.
-	fn register_class(&mut self, name : &str, class : JavaClassRef) -> JavaClassRef
-	{
+	fn register_class(&mut self, name : &str, class : JavaClassRef) -> JavaClassRef {
 		debug!("loaded class {}", name);
 		unsafe { 
 			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| {
@@ -300,8 +293,7 @@ impl ClassLoader {
 	// Load the portion of the .class file header that contains 
 	// the constant value pool (cpool) and parse all entries
 	// into proper structures.
-	fn load_constant_pool(reader: &mut Reader) ->  Result<~[Constant], ~str>
-	{
+	fn load_constant_pool(reader: &mut Reader) ->  Result<~[Constant], ~str> {
 		let cpool_count = reader.read_be_u16() as uint;
 		if cpool_count == 0 {
 			return Err(~"invalid constant pool size");
@@ -353,8 +345,8 @@ impl ClassLoader {
 	// load_future_class_from_cpool for this purpose.
 	//
 	fn load_class_from_cpool(&mut self, constants : &[Constant], index : uint)
-		-> Result<JavaClassRef, ~str>
-	{
+		-> Result<JavaClassRef, ~str> {
+
 		match ClassLoader::resolve_class_cpool_entry(
 			constants, index
 		) {
@@ -374,8 +366,8 @@ impl ClassLoader {
 	//  in the cpool. This method does not block on loading that class and
 	// is thus safe to use with cyclic references between classes.
 	fn load_future_class_from_cpool(&mut self, constants : &[Constant], index : uint)
-		-> JavaClassFutureRef
-	{
+		-> JavaClassFutureRef {
+
 		match ClassLoader::resolve_class_cpool_entry(
 			constants, index
 		) {
@@ -390,10 +382,9 @@ impl ClassLoader {
 	// super class as well as all implemented interfaces and loads
 	// all of them
 	fn load_class_parents(&mut self, constants : &[Constant], reader: &mut Reader)  
-		-> Result<~[ JavaClassRef ], ~str>
-	{
-		let mut future_parents : ~[ JavaClassRef ] = ~[];
+		-> Result<~[ JavaClassRef ], ~str> {
 
+		let mut future_parents : ~[ JavaClassRef ] = ~[];
 		let parent_index = reader.read_be_u16() as uint;
 
 		// parent_index is 0 for interfaces, and for java.lang.Object
@@ -423,8 +414,8 @@ impl ClassLoader {
 	// that is positioned correctly to be right behind the attribute head.
 	// http://docs.oracle.com/javase/specs/jvms/se7/html/jvms-4.html#jvms-4.7.3
 	pub fn load_code_attribute(&mut self, constants : &[Constant], reader: &mut Reader) -> 
-		Result<CodeBlock, ~str>
-	{
+		Result<CodeBlock, ~str> {
+
 		let max_stack = reader.read_be_u16() as uint;
 		let max_locals = reader.read_be_u16() as uint;
 		let code_len = reader.read_be_u16() as uint;
@@ -466,8 +457,8 @@ impl ClassLoader {
 	// Given a parsed constant pool, locate a class entry in it and
 	// resolve the UTF8 name of the class.
 	fn resolve_class_cpool_entry(constants : &[Constant], oneb_index : uint) ->
-		Result<~str,~str>
-	{
+		Result<~str,~str>	{
+
 		assert!(oneb_index != 0 && oneb_index <= constants.len());
 
 		match constants[oneb_index - 1] {
@@ -486,8 +477,8 @@ impl ClassLoader {
 	// ----------------------------------------------
 	fn read_cpool_entry_body(tag : ConstantPoolTags, reader : &mut Reader, count : uint, 
 		skip : &mut uint) -> 
-		Result<Constant, ~str> 
-	{
+		Result<Constant, ~str> {
+
 		let mut err : Option<~str> = None;
 		let cindex = || {
 			// indices are in [1,count)
@@ -572,6 +563,18 @@ impl Clone for ClassLoader {
 		}
 	}
 }
+
+
+// Mock class loader that refuses to load any classes and instead just
+// returns the "DUMMY" error string. Used for testing.
+pub struct DummyClassLoader;
+impl AbstractClassLoader for DummyClassLoader {
+	fn load(&mut self, name : &str) -> JavaClassFutureRef
+	{
+		return JavaClassFutureRef::new(Future::from_value(Err(~"DUMMY")));
+	}
+}
+
 
 
 
