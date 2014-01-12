@@ -42,9 +42,13 @@ use code::{CodeBlock, ExceptionHandler};
 
 
 
+pub enum JavaClassOrWaitQueue {
+	ClassLoaded(JavaClassRef),
+	ClassPending(~[Chan<Result<JavaClassRef, ~str>>]),
+}
 
 // table of java classes indexed by fully qualified name
-pub type ClassTable = HashMap<~str, JavaClassRef>;
+pub type ClassTable = HashMap<~str, JavaClassOrWaitQueue>;
 pub type ClassTableRef = MutexArc<ClassTable>;
 
 
@@ -114,14 +118,17 @@ impl ClassLoader {
 
 
 	// ----------------------------------------------
+	// Get a class if it has been loaded already. Does not attempt to
+	// load a class, or wait for loading to be completed. This method is an
+	// inherent race condition as more classes may be added concurrently.
 	pub fn get_class(&self, name : &str) -> Option<JavaClassRef>
 	{
 		let cname = name.into_owned();
 		unsafe { 
 			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| {
 				match table.find(&cname) {
-					Some(ref elem) => Some((*elem).clone()),
-					None => None
+					Some(&ClassLoaded(ref elem)) => Some((*elem).clone()),
+					_ => None
 				}
 			})
 		}
@@ -131,19 +138,38 @@ impl ClassLoader {
 	// ----------------------------------------------
 	pub fn add_from_classfile(&mut self, name : &str) -> JavaClassFutureRef
 	{
-		// do nothing if the class is already loaded
-		match self.get_class(name) {
-			Some(class) => {
-				return JavaClassFutureRef::new(Future::from_value(Ok(class)));
-			},
-			None => ()
+		// do nothing if the class is already loaded,
+		// if it is already being loaded, add ourselves to the list of waiters
+		let cname = name.into_owned();
+
+		let res = unsafe { 
+			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| -> Option<JavaClassFutureRef> {
+				match table.find_mut(&cname) {
+					Some(&ClassLoaded(ref elem)) => {
+						return Some(JavaClassFutureRef::new(Future::from_value(Ok((*elem).clone()))));
+					},
+					Some(&ClassPending(ref mut chans)) => {
+						let (mut port, chan) = Chan::new();
+						chans.push(chan);
+						return Some(JavaClassFutureRef::new(Future::from_port(port)));
+					},
+					None => (),
+				}
+
+				// add a new waiting queue
+				table.insert(cname.clone(), ClassPending(~[]));
+				None
+			})
+		};
+		if res.is_some() {
+			return res.unwrap();
 		}
 
-		// TODO: what if it is pending?
+		debug!("start async loading of class {}", name);
 
-		let cname = name.into_owned();
+		// TODO: inform waiters also if loading fails
+
 		let self_clone_outer = self.clone();
-
 		let fut = do Future::spawn {
 			// TODO: if we don't clone() twice, borrowch complains.
 			// May be resolved through https://github.com/mozilla/rust/issues/10617
@@ -245,19 +271,28 @@ impl ClassLoader {
 	// and thereby marks it officially as loaded.
 	fn register_class(&mut self, name : &str, class : JavaClassRef) -> JavaClassRef
 	{
-		let cname = name.into_owned();
-
-
-		let res = unsafe { 
+		debug!("loaded class {}", name);
+		unsafe { 
 			self.ClassTableRef.unsafe_access(|table : &mut ClassTable| {
-				(*table.find_or_insert(cname.clone(), class.clone())).clone()
+				let mut entry = table.get_mut(&name.into_owned());
+
+				match *entry {
+					ClassPending(ref mut queue) => {
+						for k in queue.mut_iter() {
+							if !k.try_send(Ok(class.clone())) {
+								debug!("failed to send class back to listener, port is hung up");
+							}
+						}
+					},
+					_ => fail!("logic error, class not marked as pending"),
+				}
+
+				*entry = ClassLoaded(class.clone());
 			}) 
 		};
 
-		debug!("loaded class {}", name);
 		assert!(self.get_class(name).is_some());
-
-		return res;
+		return class.clone();
 	}
 
 
