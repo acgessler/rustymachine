@@ -31,7 +31,11 @@ use std::task::{task};
 
 use objectbroker::*;
 
-use localheap::{LocalHeap};
+use localheap::{LocalHeap, JavaStrongObjectRef};
+
+use classloader::{ClassLoader};
+
+use object::{JavaObjectId};
 
 
 
@@ -48,8 +52,7 @@ pub struct FrameInfo {
 // not necessarily limited to, interpreting a java.lang.Thread
 // instance.
 pub struct ThreadContext {
-	// back reference to the VM, used to spawn off
-	// further threads.
+	priv classloader : ClassLoader,
 
 	// id of this thread. Unique across all threads as it
 	// is drawn from an atomic counter.
@@ -71,6 +74,11 @@ pub struct ThreadContext {
 	// received that indicated that the VM is shutting
 	// down.
 	priv vm_was_shutdown : bool,
+
+	// startup context for the thread. 
+	priv startup_class : ~str,
+	priv startup_method : ~str,
+	priv startup_object : Option<JavaStrongObjectRef>
 }
 
 	// Thread ids start at 1 as 0 is reserved for the VM
@@ -79,7 +87,7 @@ static mut ThreadContextIdCounter : uint = 1;
 impl ThreadContext {
 
 	// ----------------------------------------------
-	pub fn new(/*vm : &mut VM*/broker_chan : SharedChan<ObjectBrokerMessage>) -> ThreadContext 
+	pub fn new(classloader : ClassLoader, broker_chan : SharedChan<ObjectBrokerMessage>) -> ThreadContext 
 	{
 		// generate an unique thread id
 		let id = unsafe {
@@ -91,6 +99,7 @@ impl ThreadContext {
 		broker_chan.send(OB_REGISTER(id, chan));
 
 		let mut t = ThreadContext {
+			classloader : classloader,
 			tid : id,
 
 			heap : LocalHeap::dummy(),
@@ -102,6 +111,10 @@ impl ThreadContext {
 			frames : ~[],
 
 			vm_was_shutdown : false,
+
+			startup_class : ~"",
+			startup_method : ~"",
+			startup_object : None,
 		};
 
 		t.heap = unsafe { LocalHeap::new_with_owner(&mut t) };
@@ -114,6 +127,20 @@ impl ThreadContext {
 	#[inline]
 	pub fn get_tid(&self) -> uint {
 		self.tid
+	}
+
+
+	// ----------------------------------------------
+	// Set the context in which the java thread executes. This context
+	// is not verified until the thread executes.
+	pub fn set_context(&mut self, class : &str, method : &str, obj : Option<JavaObjectId>) {
+		self.startup_class = class.into_owned();
+		self.startup_method = method.into_owned();
+
+		self.startup_object = match obj {
+			None => None,
+			Some(jid) => Some(JavaStrongObjectRef::new(jid, &mut self.heap )),
+		}
 	}
 
 

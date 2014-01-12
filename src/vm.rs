@@ -146,9 +146,10 @@ impl VM {
 		// note: the ThreadContext immediately registers itself with the broker.
 		// this prevents the VM from shutting down as the thread is non-daemon
 		// by default.
-		let t = ThreadContext::new(self.broker_chan.clone());
+		let mut t = ThreadContext::new(self.classloader.clone(), self.broker_chan.clone());
 		let tid = t.get_tid();
-		// TODO: setup method context etc
+	
+		t.set_context(class, method, obj);
 
 		// this transfers ownership into a new task, which interprets the thread code
 		t.execute();
