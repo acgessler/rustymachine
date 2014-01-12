@@ -176,6 +176,10 @@ impl LocalHeap  {
 	// thread, access is immediately granted, otherwise the current 
 	// task blocks until ownership can be obtained.
 	//
+	// The caller is required to ensure that the object requested remains
+	// alive until control returns. This can be achieved e.g. by holding
+	// a strong reference to it.
+	//
 	// The `access` parameter specifies the kind of access requested on 
 	// the object. Note that OBJECT_ACCESS_NORMAL is always granted unless
 	// the thread who currently owns that object is deadlocked and any
@@ -331,5 +335,46 @@ impl LocalHeap  {
 				self.owned_objects.insert(b, obj);
 			},
 		}
+	}
+}
+
+
+
+// A JavaStrongObjectRef is a reference to a Java object that guarantees
+// that the referenced objects stays alive for at least the lifetime of
+// the reference. 
+
+pub struct JavaStrongObjectRef 
+{
+	priv jid : JavaObjectId,
+	priv heapref : *mut LocalHeap,
+}
+
+
+impl JavaStrongObjectRef {
+
+	// ----------------------------------------------
+	// Construct a strong ref for the given object id
+	// note: this triggers a remote add-ref on that object. If the
+	// caller's intent is to access the object immediately anyway,
+	// it is better not to construct a strong ref but to use
+	// heap::access_object().
+	//
+	// It is assumed that the given localheap remains alive for the entire
+	// duration of the object reference. 
+	pub fn new(jid : JavaObjectId, heap : &mut LocalHeap) -> JavaStrongObjectRef {
+		heap.add_ref(jid);
+		JavaStrongObjectRef {
+			jid : jid,
+			heapref : unsafe { heap }
+		}
+	}
+}
+
+
+impl Drop for JavaStrongObjectRef {
+	fn drop(&mut self) {
+		let ref mut heap = unsafe { &mut (*self.heapref) };
+		heap.release(self.jid);
 	}
 }
