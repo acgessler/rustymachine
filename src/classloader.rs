@@ -672,4 +672,35 @@ pub mod tests {
 		v = cl.add_from_classfile("InterfaceImpl").await();
 		assert_no_err(&v);
 	}
+
+
+	#[test]
+	fn test_class_loader_concurrent_loading() {
+		let mut cl_outer = test_get_real_classloader();
+
+		let (port1, chan1) = Chan::new();
+		let (port2, chan2) = Chan::new();
+
+		let cl = cl_outer.clone();
+		do spawn {
+			let mut v = cl.clone().add_from_classfile("EmptyClass").await();
+			assert_no_err(&v);
+			chan1.send(1);
+		}
+
+		let cl2 = cl_outer.clone();
+		do spawn {
+			let mut v = cl2.clone().add_from_classfile("EmptyClass").await();
+			assert_no_err(&v);
+			chan2.send(1);	
+		}
+
+		cl_outer.add_from_classfile("EmptyClass");
+		port1.recv();
+		port2.recv();
+
+		assert!(cl_outer.get_class("EmptyClass").is_some());
+	}
 }
+
+
