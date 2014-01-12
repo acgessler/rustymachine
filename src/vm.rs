@@ -27,7 +27,7 @@ use std::hashmap::{HashMap};
 use std::cast::transmute_mut;
 
 use objectbroker;
-use classloader::{ClassLoader};
+use classloader::{ClassLoader, AbstractClassLoader};
 use object::{JavaObjectId};
 use thread::{ThreadContext};
 
@@ -146,9 +146,10 @@ impl VM {
 		// note: the ThreadContext immediately registers itself with the broker.
 		// this prevents the VM from shutting down as the thread is non-daemon
 		// by default.
-		let mut t = ThreadContext::new(self.classloader.clone(), self.broker_chan.clone());
+		let ld = ~self.classloader.clone() as ~AbstractClassLoader;
+		let mut t = ThreadContext::new(ld, self.broker_chan.clone());
+
 		let tid = t.get_tid();
-	
 		t.set_context(class, method, obj);
 
 		// this transfers ownership into a new task, which interprets the thread code

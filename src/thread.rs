@@ -33,7 +33,7 @@ use objectbroker::*;
 
 use localheap::{LocalHeap, JavaStrongObjectRef};
 
-use classloader::{ClassLoader};
+use classloader::{AbstractClassLoader};
 
 use object::{JavaObjectId};
 
@@ -52,7 +52,7 @@ pub struct FrameInfo {
 // not necessarily limited to, interpreting a java.lang.Thread
 // instance.
 pub struct ThreadContext {
-	priv classloader : ClassLoader,
+	priv classloader : ~AbstractClassLoader,
 
 	// id of this thread. Unique across all threads as it
 	// is drawn from an atomic counter.
@@ -87,7 +87,7 @@ static mut ThreadContextIdCounter : uint = 1;
 impl ThreadContext {
 
 	// ----------------------------------------------
-	pub fn new(classloader : ClassLoader, broker_chan : SharedChan<ObjectBrokerMessage>) -> ThreadContext 
+	pub fn new(classloader : ~AbstractClassLoader, broker_chan : SharedChan<ObjectBrokerMessage>) -> ThreadContext 
 	{
 		// generate an unique thread id
 		let id = unsafe {
@@ -132,7 +132,9 @@ impl ThreadContext {
 
 	// ----------------------------------------------
 	// Set the context in which the java thread executes. This context
-	// is not verified until the thread executes.
+	// is not verified until the thread executes. If an object is
+	// specified, it is required to exist though and its class type must
+	// match the class specified.
 	pub fn set_context(&mut self, class : &str, method : &str, obj : Option<JavaObjectId>) {
 		self.startup_class = class.into_owned();
 		self.startup_method = method.into_owned();
@@ -179,6 +181,13 @@ impl ThreadContext {
 
 
 	// ----------------------------------------------
+	pub fn die_exception(self, exception_type : &str, opt_message : Option<&str>)
+	{
+		// TODO
+	}
+
+
+	// ----------------------------------------------
 	// Execute the context concurrently. This transfers ownership
 	// of the context into a separate task and yields a communication
 	// channel for other threads to interrupt.
@@ -189,13 +198,27 @@ impl ThreadContext {
 
 		do tt.spawn {
 			let mut inner = self;
+
+			// first: resolve the class
+			let maybe_class = inner.classloader.load(inner.startup_class).await();
+			match maybe_class {
+				Err(msg) => {
+					inner.die_exception("java.lang.ClassNotFoundException", None);
+					return;
+				},
+				Ok(jclass) => {
+					// resolve the method signature
+
+				}
+			}
+
 			loop {
 				inner.op();
-				if self.vm_was_shutdown {
+				if inner.vm_was_shutdown {
 					break;
 				}
 			}
-			self.die();
+			inner.die();
 		}
 	}
 
