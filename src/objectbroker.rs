@@ -296,8 +296,7 @@ impl ObjectBroker {
 				debug!("object broker registered with thread {}", a);
 
 				// also register the thread with the thread manager
-				// TODO: GID
-				self.threads.add_thread(a, 0);
+				self.threads.add_thread(a);
 				assert_eq!(self.threads.get_state(), threadmanager::TMS_Running);
 			},
 
