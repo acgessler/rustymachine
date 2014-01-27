@@ -151,7 +151,7 @@ impl JavaMonitor {
 
 		// otherwise just pick any thread who is waiting to
 		// lock the mutex.
-		self.waiters.shift_opt()
+		self.waiters.shift()
 	}
 
 

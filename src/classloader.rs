@@ -22,9 +22,8 @@
 
 use std::hashmap::{HashMap};
 use std::path::{PosixPath};
-use std::io::mem::{BufReader};
-use std::io::{result, IoError};
-use std::str::{from_utf8_owned_opt};
+use std::io::{result, IoError, BufReader};
+use std::str::{from_utf8_owned};
 
 use extra::future::{Future};
 use extra::arc::{Arc, MutexArc};
@@ -287,7 +286,7 @@ impl ClassLoader {
 			let fields_count = reader.read_be_u16() as uint;
 
 			// 5. class and instance methods
-			let methods = self.read_methods(reader, constants);
+			//let methods = self.read_methods(reader, constants);
 		
 
 			/*
@@ -631,8 +630,7 @@ impl ClassLoader {
 				// TODO: Java uses a "modified UTF8", which
 				//  - encodes NIL as two bytes
 				//  - uss two three-byte sequences to encode four byte encodings
-				let s = from_utf8_owned_opt(raw);
-				match s {
+				match from_utf8_owned(raw) {
 					None => {
 						err = Some(~"constant pool entry is not  valid UTF8 string");
 						CONSTANT_utf8_info(~"")

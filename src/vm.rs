@@ -23,6 +23,7 @@
 // (but not actual bytecode interpretation - see thread.rs for this)
 
 use std::hashmap::{HashMap};
+use std::comm::{Data, Empty, Disconnected};
 
 use std::cast::transmute_mut;
 
@@ -205,18 +206,17 @@ impl VM {
 		let this = unsafe { transmute_mut(self) };
 		
 		match this.broker_port.try_recv() {
-			Some(BROKER_TO_VM_DID_SHUTDOWN(code)) => {
+			Data(BROKER_TO_VM_DID_SHUTDOWN(code)) => {
 				this.exit_code = Some(code);
 
 				// acknowledge - this renders our broker chan and port hung up
-				// but because exit_code is set we know now to use them.
+				// but because exit_code is set we know not to use them.
 				this.broker_chan.try_send(objectbroker::OB_VM_TO_BROKER(VM_TO_BROKER_ACK_SHUTDOWN));
 				this.exit_code
 			},
-			// since the broker cannot hang up before we acknowledge
-			// (and control would not have reached here in this case)
-			// this means there is no more message.
-			None => None,
+
+			Empty => None,
+			Disconnected => fail!("logic error, broker cannot hang up unless we acked"),
 		}
 	}
 

@@ -399,7 +399,7 @@ impl ObjectBroker {
 				// but not more than one OWN message
 				let mut sh = self.waiting_shelf.pop(&b).unwrap();
 				while sh.len() > 0 {
-					match sh.shift() {
+					match sh.shift().unwrap() {
 						OB_REMOTE_OBJECT_OP(a, b, op) => self.handle_object_op(a, b, op),
 						_ => fail!("logic error, cannot shelve this message"),
 					}
